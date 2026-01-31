@@ -40,16 +40,24 @@ class AnthropicExecutor:
         tool_result_content: list[BetaToolResultBlockParam] = []
         for content_block in cast(list[BetaContentBlock], response.content):
             self.output_callback(content_block, sender="bot")
-            # Execute the tool
             if content_block.type == "tool_use":
-                # Run the asynchronous tool execution in a synchronous context
+                tool_input = cast(dict[str, Any], content_block.input)
+                print("=" * 50)
+                print(f"[EXECUTOR] 准备执行 Tool: {content_block.name}")
+                print(f"[EXECUTOR] Tool Input: {tool_input}")
+
                 result = asyncio.run(self.tool_collection.run(
                     name=content_block.name,
-                    tool_input=cast(dict[str, Any], content_block.input),
+                    tool_input=tool_input,
                 ))
-                
+
+                print(f"[EXECUTOR] 执行完成, 结果: {result.output if result.output else 'OK'}")
+                if result.error:
+                    print(f"[EXECUTOR] 错误: {result.error}")
+                print("=" * 50)
+
                 self.output_callback(result, sender="bot")
-                
+
                 tool_result_content.append(
                     _make_api_tool_result(result, content_block.id)
                 )
