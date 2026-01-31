@@ -20,15 +20,7 @@ from matplotlib import pyplot as plt
 import easyocr
 from paddleocr import PaddleOCR
 reader = easyocr.Reader(['en'])
-paddle_ocr = PaddleOCR(
-    lang='en',  # other lang also available
-    use_angle_cls=False,
-    use_gpu=False,  # using cuda will conflict with pytorch in the same process
-    show_log=False,
-    max_batch_size=1024,
-    use_dilation=True,  # improves accuracy
-    det_db_score_mode='slow',  # improves accuracy
-    rec_batch_num=1024)
+paddle_ocr = PaddleOCR(lang='en')
 import time
 import base64
 
@@ -59,12 +51,12 @@ def get_caption_model_processor(model_name, model_name_or_path="Salesforce/blip2
             model_name_or_path, device_map=None, torch_dtype=torch.float16
         ).to(device)
     elif model_name == "florence2":
-        from transformers import AutoProcessor, AutoModelForCausalLM 
+        from transformers import AutoProcessor, AutoModelForCausalLM
         processor = AutoProcessor.from_pretrained("microsoft/Florence-2-base", trust_remote_code=True)
         if device == 'cpu':
-            model = AutoModelForCausalLM.from_pretrained(model_name_or_path, torch_dtype=torch.float32, trust_remote_code=True)
+            model = AutoModelForCausalLM.from_pretrained(model_name_or_path, torch_dtype=torch.float32, trust_remote_code=True, attn_implementation='eager')
         else:
-            model = AutoModelForCausalLM.from_pretrained(model_name_or_path, torch_dtype=torch.float16, trust_remote_code=True).to(device)
+            model = AutoModelForCausalLM.from_pretrained(model_name_or_path, torch_dtype=torch.float16, trust_remote_code=True, attn_implementation='eager').to(device)
     return {'model': model.to(device), 'processor': processor}
 
 
@@ -112,7 +104,16 @@ def get_parsed_content_icon(filtered_boxes, starting_idx, image_source, caption_
         else:
             inputs = processor(images=batch, text=[prompt]*len(batch), return_tensors="pt").to(device=device)
         if 'florence' in model.config.name_or_path:
-            generated_ids = model.generate(input_ids=inputs["input_ids"],pixel_values=inputs["pixel_values"],max_new_tokens=20,num_beams=1, do_sample=False)
+            # 修复 Florence-2 在 CPU 模式下的 past_key_values bug
+            # 使用 use_cache=False 来避免 past_key_values 错误
+            generated_ids = model.generate(
+                input_ids=inputs["input_ids"],
+                pixel_values=inputs["pixel_values"],
+                max_new_tokens=20,
+                num_beams=1,
+                do_sample=False,
+                use_cache=False  # 禁用 KV cache 以避免 NoneType 错误
+            )
         else:
             generated_ids = model.generate(**inputs, max_length=100, num_beams=5, no_repeat_ngram_size=2, early_stopping=True, num_return_sequences=1) # temperature=0.01, do_sample=True,
         generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)

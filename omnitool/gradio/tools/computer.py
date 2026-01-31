@@ -1,7 +1,18 @@
 import base64
 import time
-from enum import StrEnum
+import pyautogui
+from enum import Enum
+import sys
 from typing import Literal, TypedDict
+
+# Python 3.10 兼容性: StrEnum 在 3.11+ 才有
+if sys.version_info >= (3, 11):
+    from enum import StrEnum
+else:
+    class StrEnum(str, Enum):
+        """Python 3.10 的 StrEnum 兼容实现"""
+        def __str__(self):
+            return str(self.value)
 
 from PIL import Image
 
@@ -41,7 +52,9 @@ class Resolution(TypedDict):
 MAX_SCALING_TARGETS: dict[str, Resolution] = {
     "XGA": Resolution(width=1024, height=768),  # 4:3
     "WXGA": Resolution(width=1280, height=800),  # 16:10
-    "FWXGA": Resolution(width=1366, height=768),  # ~16:9
+    "FWXGA": Resolution(width=1366, height=768),
+    "MAX_FWXGA": Resolution(width=25690, height=1440),
+
 }
 
 
@@ -96,7 +109,7 @@ class ComputerTool(BaseAnthropicTool):
         self.offset_x = 0
         self.offset_y = 0
         self.is_scaling = is_scaling
-        self.width, self.height = self.get_screen_size()
+        self.width, self.height = self.get_local_screen_size()
         print(f"screen size: {self.width}, {self.height}")
 
         self.key_conversion = {"Page_Down": "pagedown",
@@ -131,6 +144,10 @@ class ComputerTool(BaseAnthropicTool):
                 )
             else:
                 x, y = coordinate
+            screen_width, screen_height = pyautogui.size()
+            # Ensure x and y are within screen bounds
+            x = min(max(x, 0), screen_width - 1)
+            y = min(max(y, 0), screen_height - 1)
 
             # print(f"scaled_coordinates: {x}, {y}")
             # print(f"offset: {self.offset_x}, {self.offset_y}")
@@ -141,11 +158,11 @@ class ComputerTool(BaseAnthropicTool):
             print(f"mouse move to {x}, {y}")
             
             if action == "mouse_move":
-                self.send_to_vm(f"pyautogui.moveTo({x}, {y})")
+                self.send_to_local(f"pyautogui.moveTo({x}, {y})")
                 return ToolResult(output=f"Moved mouse to ({x}, {y})")
             elif action == "left_click_drag":
-                current_x, current_y = self.send_to_vm("pyautogui.position()")
-                self.send_to_vm(f"pyautogui.dragTo({x}, {y}, duration=0.5)")
+                current_x, current_y = self.send_to_local("pyautogui.position()")
+                self.send_to_local(f"pyautogui.dragTo({x}, {y}, duration=0.5)")
                 return ToolResult(output=f"Dragged mouse from ({current_x}, {current_y}) to ({x}, {y})")
 
         if action in ("key", "type"):
@@ -162,18 +179,22 @@ class ComputerTool(BaseAnthropicTool):
                 for key in keys:
                     key = self.key_conversion.get(key.strip(), key.strip())
                     key = key.lower()
-                    self.send_to_vm(f"pyautogui.keyDown('{key}')")  # Press down each key
+                    self.send_to_local(f"pyautogui.keyDown('{key}')")  # Press down each key
                 for key in reversed(keys):
                     key = self.key_conversion.get(key.strip(), key.strip())
                     key = key.lower()
-                    self.send_to_vm(f"pyautogui.keyUp('{key}')")    # Release each key in reverse order
+                    self.send_to_local(f"pyautogui.keyUp('{key}')")    # Release each key in reverse order
                 return ToolResult(output=f"Pressed keys: {text}")
             
             elif action == "type":
-                # default click before type TODO: check if this is needed
-                self.send_to_vm("pyautogui.click()")
-                self.send_to_vm(f"pyautogui.typewrite('{text}', interval={TYPING_DELAY_MS / 1000})")
-                self.send_to_vm("pyautogui.press('enter')")
+                self.send_to_local("pyautogui.click()")
+
+                clean_text = text.strip().replace('\n', '').replace('\r', '')
+                if clean_text:
+                    safe_text = clean_text.replace("'", "\\'").replace('"', '\\"')
+                    self.send_to_local(f"pyautogui.typewrite('{safe_text}', interval={TYPING_DELAY_MS / 1000})")
+
+                self.send_to_local("pyautogui.press('enter')")
                 screenshot_base64 = (await self.screenshot()).base64_image
                 return ToolResult(output=text, base64_image=screenshot_base64)
 
@@ -194,28 +215,28 @@ class ComputerTool(BaseAnthropicTool):
             if action == "screenshot":
                 return await self.screenshot()
             elif action == "cursor_position":
-                x, y = self.send_to_vm("pyautogui.position()")
+                x, y = self.send_to_local("pyautogui.position()")
                 x, y = self.scale_coordinates(ScalingSource.COMPUTER, x, y)
                 return ToolResult(output=f"X={x},Y={y}")
             else:
                 if action == "left_click":
-                    self.send_to_vm("pyautogui.click()")
+                    self.send_to_local("pyautogui.click()")
                 elif action == "right_click":
-                    self.send_to_vm("pyautogui.rightClick()")
+                    self.send_to_local("pyautogui.rightClick()")
                 elif action == "middle_click":
-                    self.send_to_vm("pyautogui.middleClick()")
+                    self.send_to_local("pyautogui.middleClick()")
                 elif action == "double_click":
-                    self.send_to_vm("pyautogui.doubleClick()")
+                    self.send_to_local("pyautogui.doubleClick()")
                 elif action == "left_press":
-                    self.send_to_vm("pyautogui.mouseDown()")
+                    self.send_to_local("pyautogui.mouseDown()")
                     time.sleep(1)
-                    self.send_to_vm("pyautogui.mouseUp()")
+                    self.send_to_local("pyautogui.mouseUp()")
                 return ToolResult(output=f"Performed {action}")
         if action in ("scroll_up", "scroll_down"):
             if action == "scroll_up":
-                self.send_to_vm("pyautogui.scroll(100)")
+                self.send_to_local("pyautogui.scroll(100)")
             elif action == "scroll_down":
-                self.send_to_vm("pyautogui.scroll(-100)")
+                self.send_to_local("pyautogui.scroll(-100)")
             return ToolResult(output=f"Performed {action}")
         if action == "hover":
             return ToolResult(output=f"Performed {action}")
@@ -224,37 +245,53 @@ class ComputerTool(BaseAnthropicTool):
             return ToolResult(output=f"Performed {action}")
         raise ToolError(f"Invalid action: {action}")
 
-    def send_to_vm(self, action: str):
-        """
-        Executes a python command on the server. Only return tuple of x,y when action is "pyautogui.position()"
-        """
-        prefix = "import pyautogui; pyautogui.FAILSAFE = False;"
-        command_list = ["python", "-c", f"{prefix} {action}"]
-        parse = action == "pyautogui.position()"
-        if parse:
-            command_list[-1] = f"{prefix} print({action})"
+    # def send_to_vm(self, action: str):
+    #     """
+    #     Executes a python command on the server. Only return tuple of x,y when action is "pyautogui.position()"
+    #     """
+    #     prefix = "import pyautogui; pyautogui.FAILSAFE = False;"
+    #     command_list = ["python", "-c", f"{prefix} {action}"]
+    #     parse = action == "pyautogui.position()"
+    #     if parse:
+    #         command_list[-1] = f"{prefix} print({action})"
+    #
+    #     try:
+    #         print(f"sending to vm: {command_list}")
+    #         response = requests.post(
+    #             f"http://localhost:5000/execute",
+    #             headers={'Content-Type': 'application/json'},
+    #             json={"command": command_list},
+    #             timeout=90
+    #         )
+    #         time.sleep(0.7) # avoid async error as actions take time to complete
+    #         print(f"action executed")
+    #         if response.status_code != 200:
+    #             raise ToolError(f"Failed to execute command. Status code: {response.status_code}")
+    #         if parse:
+    #             output = response.json()['output'].strip()
+    #             match = re.search(r'Point\(x=(\d+),\s*y=(\d+)\)', output)
+    #             if not match:
+    #                 raise ToolError(f"Could not parse coordinates from output: {output}")
+    #             x, y = map(int, match.groups())
+    #             return x, y
+    #     except requests.exceptions.RequestException as e:
+    #         raise ToolError(f"An error occurred while trying to execute the command: {str(e)}")
+    #
 
-        try:
-            print(f"sending to vm: {command_list}")
-            response = requests.post(
-                f"http://localhost:5000/execute", 
-                headers={'Content-Type': 'application/json'},
-                json={"command": command_list},
-                timeout=90
-            )
-            time.sleep(0.7) # avoid async error as actions take time to complete
-            print(f"action executed")
-            if response.status_code != 200:
-                raise ToolError(f"Failed to execute command. Status code: {response.status_code}")
-            if parse:
-                output = response.json()['output'].strip()
-                match = re.search(r'Point\(x=(\d+),\s*y=(\d+)\)', output)
-                if not match:
-                    raise ToolError(f"Could not parse coordinates from output: {output}")
-                x, y = map(int, match.groups())
-                return x, y
-        except requests.exceptions.RequestException as e:
-            raise ToolError(f"An error occurred while trying to execute the command: {str(e)}")
+    def send_to_local(self, action: str):
+        """ Executes a python command directly on the local machine. """
+        prefix = "import pyautogui; pyautogui.FAILSAFE = False;"
+        command = f"{prefix} {action}"
+
+        print(f"[PYAUTOGUI] 执行: {action}")
+
+        if action == "pyautogui.position()":
+            pos = pyautogui.position()
+            print(f"[PYAUTOGUI] 当前鼠标位置: {pos}")
+            return pos
+        else:
+            exec(command)
+            print(f"[PYAUTOGUI] 完成: {action}")
 
     async def screenshot(self):
         if not hasattr(self, 'target_dimension'):
@@ -279,12 +316,16 @@ class ComputerTool(BaseAnthropicTool):
         """Scale coordinates to a target maximum resolution."""
         if not self._scaling_enabled:
             return x, y
+        # 计算当前屏幕的宽高比
         ratio = self.width / self.height
         target_dimension = None
 
+        # 遍历定义的目标分辨率，找到与当前屏幕宽高比相近的目标分辨率
         for target_name, dimension in MAX_SCALING_TARGETS.items():
             # allow some error in the aspect ratio - not ratios are exactly 16:9
+            # 允许一定误差范围来匹配宽高比（例如16:9不是严格精确的，可能是16:10）
             if abs(dimension["width"] / dimension["height"] - ratio) < 0.02:
+                # 如果目标分辨率的宽度小于当前屏幕的宽度，选择该目标分辨率作为目标
                 if dimension["width"] < self.width:
                     target_dimension = dimension
                     self.target_dimension = target_dimension
@@ -307,23 +348,30 @@ class ComputerTool(BaseAnthropicTool):
         # scale down
         return round(x * x_scaling_factor), round(y * y_scaling_factor)
 
-    def get_screen_size(self):
-        """Return width and height of the screen"""
-        try:
-            response = requests.post(
-                f"http://localhost:5000/execute",
-                headers={'Content-Type': 'application/json'},
-                json={"command": ["python", "-c", "import pyautogui; print(pyautogui.size())"]},
-                timeout=90
-            )
-            if response.status_code != 200:
-                raise ToolError(f"Failed to get screen size. Status code: {response.status_code}")
-            
-            output = response.json()['output'].strip()
-            match = re.search(r'Size\(width=(\d+),\s*height=(\d+)\)', output)
-            if not match:
-                raise ToolError(f"Could not parse screen size from output: {output}")
-            width, height = map(int, match.groups())
-            return width, height
-        except requests.exceptions.RequestException as e:
-            raise ToolError(f"An error occurred while trying to get screen size: {str(e)}")
+
+    def get_local_screen_size(self):
+        """ Returns width and height of the local screen """
+        import pyautogui
+        screen_width, screen_height = pyautogui.size()
+        return screen_width, screen_height
+
+    # def get_screen_size(self):
+    #     """Return width and height of the screen"""
+    #     try:
+    #         response = requests.post(
+    #             f"http://localhost:5000/execute",
+    #             headers={'Content-Type': 'application/json'},
+    #             json={"command": ["python", "-c", "import pyautogui; print(pyautogui.size())"]},
+    #             timeout=90
+    #         )
+    #         if response.status_code != 200:
+    #             raise ToolError(f"Failed to get screen size. Status code: {response.status_code}")
+    #
+    #         output = response.json()['output'].strip()
+    #         match = re.search(r'Size\(width=(\d+),\s*height=(\d+)\)', output)
+    #         if not match:
+    #             raise ToolError(f"Could not parse screen size from output: {output}")
+    #         width, height = map(int, match.groups())
+    #         return width, height
+    #     except requests.exceptions.RequestException as e:
+    #         raise ToolError(f"An error occurred while trying to get screen size: {str(e)}")

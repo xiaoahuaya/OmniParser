@@ -1,0 +1,19 @@
+{
+  "providers": {
+    "codex_proxy": {
+      "name": "Codex 中转",
+      "base_url": "https://right.codes/codex/v1",
+      "api_key": "sk-f4e34b7513a843ba8602a1ac178f3006",
+      "default_model": "gpt-5.2",
+      "available_models": ["gpt-4o", "gpt-5.2-codex", "gpt-5.2", "gpt-5.1-codex-max", "gpt-5.1-codex", "gpt-5.1", "gpt-5-codex"]
+    },
+    "claude_proxy": {
+      "name": "Claude 中转",
+      "base_url": "https://vibe-coding-crs.om.dianhun.cn/api",
+      "api_key": "cr_b4fecd2f2f2e19e7f6dd3337b44f8260f13ad9605d6ed0437d7e5374c614b48d",
+      "default_model": "claude-3-5-sonnet-20241022",
+      "available_models": ["claude-3-5-sonnet-20241022", "claude-3-opus-20240229", "claude-3-haiku-20240307"]
+    }
+  },
+  "default_provider": "codex_proxy"
+}

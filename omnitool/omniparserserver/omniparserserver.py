@@ -36,16 +36,23 @@ class ParseRequest(BaseModel):
 
 @app.post("/parse/")
 async def parse(parse_request: ParseRequest):
-    print('start parsing...')
-    start = time.time()
-    dino_labled_img, parsed_content_list = omniparser.parse(parse_request.base64_image)
-    latency = time.time() - start
-    print('time:', latency)
-    return {"som_image_base64": dino_labled_img, "parsed_content_list": parsed_content_list, 'latency': latency}
+    try:
+        print('[DEBUG] start parsing...')
+        print(f'[DEBUG] Received image base64 length: {len(parse_request.base64_image)}')
+        start = time.time()
+        dino_labled_img, parsed_content_list = omniparser.parse(parse_request.base64_image)
+        latency = time.time() - start
+        print(f'[DEBUG] Parsing completed in {latency:.2f}s')
+        return {"som_image_base64": dino_labled_img, "parsed_content_list": parsed_content_list, 'latency': latency}
+    except Exception as e:
+        print(f'[ERROR] Exception occurred: {type(e).__name__}: {str(e)}')
+        import traceback
+        traceback.print_exc()
+        raise
 
 @app.get("/probe/")
 async def root():
     return {"message": "Omniparser API ready"}
 
 if __name__ == "__main__":
-    uvicorn.run("omniparserserver:app", host=args.host, port=args.port, reload=True)
+    uvicorn.run("omniparserserver:app", host=args.host, port=args.port, reload=False)
