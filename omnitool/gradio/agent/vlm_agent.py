@@ -262,6 +262,13 @@ class VLMAgent:
                                         name='computer', type='tool_use')
             response_content.append(sim_content_block)
             action_info = f"⌨️ **输入文字**: `{type_value}` (Box ID: {box_id})"
+        elif next_action == "key":
+            key_value = vlm_response_json.get("value", "")
+            sim_content_block = BetaToolUseBlock(id=f'toolu_{uuid.uuid4()}',
+                                        input={'action': next_action, 'text': key_value},
+                                        name='computer', type='tool_use')
+            response_content.append(sim_content_block)
+            action_info = f"⌨️ **快捷键**: `{key_value}`"
         else:
             sim_content_block = BetaToolUseBlock(id=f'toolu_{uuid.uuid4()}',
                                             input={'action': next_action},
@@ -288,7 +295,7 @@ class VLMAgent:
 
 根据用户任务和截图，告诉程序下一步点击哪个元素（Box ID）。
 
-可用动作：left_click, right_click, double_click, type, scroll_up, scroll_down, wait, None
+可用动作：left_click, right_click, double_click, type, key, scroll_up, scroll_down, wait, None
 
 只输出JSON，格式如下：
 ```json
@@ -319,7 +326,16 @@ class VLMAgent:
 }}
 ```
 
-示例3 - 任务完成：
+示例3 - 键盘快捷键（全选）：
+```json
+{{
+    "Reasoning": "搜索框已获得焦点但包含旧内容，需要先全选再覆盖输入",
+    "Next Action": "key",
+    "value": "ctrl+a"
+}}
+```
+
+示例4 - 任务完成：
 ```json
 {{
     "Reasoning": "已完成用户要求的任务",

@@ -1,0 +1,1874 @@
+Subject: [PATCH] test
+---
+Index: omnitool/omnibox/.idea/.gitignore
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/omnitool/omnibox/.idea/.gitignore b/omnitool/omnibox/.idea/.gitignore
+new file mode 100644
+--- /dev/null	(date 1739883411927)
++++ b/omnitool/omnibox/.idea/.gitignore	(date 1739883411927)
+@@ -0,0 +1,8 @@
++# Default ignored files
++/shelf/
++/workspace.xml
++# Editor-based HTTP Client requests
++/httpRequests/
++# Datasource local storage ignored files
++/dataSources/
++/dataSources.local.xml
+Index: omnitool/gradio/llm_config.json
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/omnitool/gradio/llm_config.json b/omnitool/gradio/llm_config.json
+new file mode 100644
+--- /dev/null	(date 1769861238586)
++++ b/omnitool/gradio/llm_config.json	(date 1769861238586)
+@@ -0,0 +1,19 @@
++{
++  "providers": {
++    "codex_proxy": {
++      "name": "Codex 中转",
++      "base_url": "https://right.codes/codex/v1",
++      "api_key": "sk-f4e34b7513a843ba8602a1ac178f3006",
++      "default_model": "gpt-5.2-codex",
++      "available_models": ["gpt-5.2-codex", "gpt-5.2", "gpt-5.1-codex-max", "gpt-5.1-codex", "gpt-5.1", "gpt-5-codex"]
++    },
++    "claude_proxy": {
++      "name": "Claude 中转",
++      "base_url": "https://vibe-coding-crs.om.dianhun.cn/api",
++      "api_key": "cr_b4fecd2f2f2e19e7f6dd3337b44f8260f13ad9605d6ed0437d7e5374c614b48d",
++      "default_model": "claude-3-5-sonnet-20241022",
++      "available_models": ["claude-3-5-sonnet-20241022", "claude-3-opus-20240229", "claude-3-haiku-20240307"]
++    }
++  },
++  "default_provider": "codex_proxy"
++}
+Index: omnitool/omnibox/.idea/encodings.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/omnitool/omnibox/.idea/encodings.xml b/omnitool/omnibox/.idea/encodings.xml
+new file mode 100644
+--- /dev/null	(date 1739883403512)
++++ b/omnitool/omnibox/.idea/encodings.xml	(date 1739883403512)
+@@ -0,0 +1,4 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<project version="4">
++  <component name="Encoding" defaultCharsetForPropertiesFiles="UTF-8" />
++</project>
+\ No newline at end of file
+Index: util/utils.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/util/utils.py b/util/utils.py
+--- a/util/utils.py	(revision b0d5c9f5701f7e2be4771872e6e928da77759df3)
++++ b/util/utils.py	(date 1763870596270)
+@@ -20,15 +20,7 @@
+ import easyocr
+ from paddleocr import PaddleOCR
+ reader = easyocr.Reader(['en'])
+-paddle_ocr = PaddleOCR(
+-    lang='en',  # other lang also available
+-    use_angle_cls=False,
+-    use_gpu=False,  # using cuda will conflict with pytorch in the same process
+-    show_log=False,
+-    max_batch_size=1024,
+-    use_dilation=True,  # improves accuracy
+-    det_db_score_mode='slow',  # improves accuracy
+-    rec_batch_num=1024)
++paddle_ocr = PaddleOCR(lang='en')
+ import time
+ import base64
+ 
+@@ -59,12 +51,12 @@
+             model_name_or_path, device_map=None, torch_dtype=torch.float16
+         ).to(device)
+     elif model_name == "florence2":
+-        from transformers import AutoProcessor, AutoModelForCausalLM 
++        from transformers import AutoProcessor, AutoModelForCausalLM
+         processor = AutoProcessor.from_pretrained("microsoft/Florence-2-base", trust_remote_code=True)
+         if device == 'cpu':
+-            model = AutoModelForCausalLM.from_pretrained(model_name_or_path, torch_dtype=torch.float32, trust_remote_code=True)
++            model = AutoModelForCausalLM.from_pretrained(model_name_or_path, torch_dtype=torch.float32, trust_remote_code=True, attn_implementation='eager')
+         else:
+-            model = AutoModelForCausalLM.from_pretrained(model_name_or_path, torch_dtype=torch.float16, trust_remote_code=True).to(device)
++            model = AutoModelForCausalLM.from_pretrained(model_name_or_path, torch_dtype=torch.float16, trust_remote_code=True, attn_implementation='eager').to(device)
+     return {'model': model.to(device), 'processor': processor}
+ 
+ 
+@@ -112,7 +104,16 @@
+         else:
+             inputs = processor(images=batch, text=[prompt]*len(batch), return_tensors="pt").to(device=device)
+         if 'florence' in model.config.name_or_path:
+-            generated_ids = model.generate(input_ids=inputs["input_ids"],pixel_values=inputs["pixel_values"],max_new_tokens=20,num_beams=1, do_sample=False)
++            # 修复 Florence-2 在 CPU 模式下的 past_key_values bug
++            # 使用 use_cache=False 来避免 past_key_values 错误
++            generated_ids = model.generate(
++                input_ids=inputs["input_ids"],
++                pixel_values=inputs["pixel_values"],
++                max_new_tokens=20,
++                num_beams=1,
++                do_sample=False,
++                use_cache=False  # 禁用 KV cache 以避免 NoneType 错误
++            )
+         else:
+             generated_ids = model.generate(**inputs, max_length=100, num_beams=5, no_repeat_ngram_size=2, early_stopping=True, num_return_sequences=1) # temperature=0.01, do_sample=True,
+         generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)
+Index: omnitool/omnibox/.idea/vcs.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/omnitool/omnibox/.idea/vcs.xml b/omnitool/omnibox/.idea/vcs.xml
+new file mode 100644
+--- /dev/null	(date 1739883445505)
++++ b/omnitool/omnibox/.idea/vcs.xml	(date 1739883445505)
+@@ -0,0 +1,6 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<project version="4">
++  <component name="VcsDirectoryMappings">
++    <mapping directory="$PROJECT_DIR$/../.." vcs="Git" />
++  </component>
++</project>
+\ No newline at end of file
+Index: omnitool/omnibox/.idea/modules.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/omnitool/omnibox/.idea/modules.xml b/omnitool/omnibox/.idea/modules.xml
+new file mode 100644
+--- /dev/null	(date 1739883445497)
++++ b/omnitool/omnibox/.idea/modules.xml	(date 1739883445497)
+@@ -0,0 +1,8 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<project version="4">
++  <component name="ProjectModuleManager">
++    <modules>
++      <module fileurl="file://$PROJECT_DIR$/.idea/omnibox.iml" filepath="$PROJECT_DIR$/.idea/omnibox.iml" />
++    </modules>
++  </component>
++</project>
+\ No newline at end of file
+Index: omnitool/omnibox/.idea/omnibox.iml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/omnitool/omnibox/.idea/omnibox.iml b/omnitool/omnibox/.idea/omnibox.iml
+new file mode 100644
+--- /dev/null	(date 1739883445493)
++++ b/omnitool/omnibox/.idea/omnibox.iml	(date 1739883445493)
+@@ -0,0 +1,9 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<module type="JAVA_MODULE" version="4">
++  <component name="NewModuleRootManager" inherit-compiler-output="true">
++    <exclude-output />
++    <content url="file://$MODULE_DIR$" />
++    <orderEntry type="inheritedJdk" />
++    <orderEntry type="sourceFolder" forTests="false" />
++  </component>
++</module>
+\ No newline at end of file
+Index: omnitool/gradio/agent/llm_utils/proxy_client.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/omnitool/gradio/agent/llm_utils/proxy_client.py b/omnitool/gradio/agent/llm_utils/proxy_client.py
+new file mode 100644
+--- /dev/null	(date 1769863414405)
++++ b/omnitool/gradio/agent/llm_utils/proxy_client.py	(date 1769863414405)
+@@ -0,0 +1,161 @@
++"""
++统一的 LLM 中转 API 客户端
++支持 OpenAI 兼容格式的中转 API（包括 Claude 中转）
++"""
++import requests
++import base64
++from typing import Optional, Tuple, List, Dict, Any
++from .utils import is_image_path, encode_image
++
++
++def run_proxy_interleaved(
++    messages: list,
++    system: str,
++    model_name: str,
++    api_key: str,
++    base_url: str,
++    max_tokens: int = 4096,
++    temperature: float = 0.0,
++) -> Tuple[str, int]:
++    """
++    通过中转 API 调用 LLM
++    支持 OpenAI 兼容格式的所有中转服务
++
++    Args:
++        messages: 消息列表
++        system: 系统提示词
++        model_name: 模型名称
++        api_key: API Key
++        base_url: 中转 API 地址
++        max_tokens: 最大 token 数
++        temperature: 温度参数
++
++    Returns:
++        (响应文本, token 使用量)
++    """
++    headers = {
++        "Content-Type": "application/json",
++        "Authorization": f"Bearer {api_key}"
++    }
++
++    final_messages = [{"role": "system", "content": system}]
++
++    if isinstance(messages, list):
++        for item in messages:
++            contents = []
++            if isinstance(item, dict):
++                for cnt in item.get("content", []):
++                    if isinstance(cnt, str):
++                        if is_image_path(cnt):
++                            base64_image = encode_image(cnt)
++                            content = {
++                                "type": "image_url",
++                                "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
++                            }
++                        else:
++                            content = {"type": "text", "text": cnt}
++                    else:
++                        content = {"type": "text", "text": str(cnt)}
++                    contents.append(content)
++                message = {"role": "user", "content": contents}
++            else:
++                contents.append({"type": "text", "text": item})
++                message = {"role": "user", "content": contents}
++            final_messages.append(message)
++    elif isinstance(messages, str):
++        final_messages = [{"role": "user", "content": messages}]
++
++    payload = {
++        "model": model_name,
++        "messages": final_messages,
++        "max_tokens": max_tokens,
++        "temperature": temperature,
++    }
++
++    endpoint = f"{base_url.rstrip('/')}/chat/completions"
++
++    print("=" * 60)
++    print("[PROXY REQUEST]")
++    print(f"Endpoint: {endpoint}")
++    print(f"Model: {model_name}")
++    print(f"System: {system[:200]}..." if len(system) > 200 else f"System: {system}")
++    print(f"Messages count: {len(final_messages)}")
++    for i, msg in enumerate(final_messages):
++        role = msg.get('role', 'unknown')
++        content = msg.get('content', '')
++        if isinstance(content, list):
++            text_parts = [c.get('text', '')[:100] for c in content if c.get('type') == 'text']
++            img_count = sum(1 for c in content if c.get('type') == 'image_url')
++            print(f"  [{i}] {role}: {text_parts} + {img_count} images")
++        else:
++            print(f"  [{i}] {role}: {str(content)[:100]}...")
++    print("=" * 60)
++
++    try:
++        response = requests.post(endpoint, headers=headers, json=payload, timeout=120)
++        response.raise_for_status()
++
++        result = response.json()
++        text = result['choices'][0]['message']['content']
++        token_usage = int(result.get('usage', {}).get('total_tokens', 0))
++
++        print("[PROXY RESPONSE]")
++        print(f"Status: {response.status_code}")
++        print(f"Tokens: {token_usage}")
++        print(f"Response: {text}")
++        print("=" * 60)
++
++        return text, token_usage
++
++    except requests.exceptions.RequestException as e:
++        error_msg = f"中转 API 请求失败: {e}"
++        print(error_msg)
++        if hasattr(e, 'response') and e.response is not None:
++            try:
++                error_detail = e.response.json()
++                print(f"错误详情: {error_detail}")
++            except:
++                print(f"响应内容: {e.response.text}")
++        return error_msg, 0
++    except (KeyError, IndexError) as e:
++        error_msg = f"解析响应失败: {e}"
++        print(error_msg)
++        return error_msg, 0
++
++
++def test_proxy_connection(base_url: str, api_key: str, model_name: str = "gpt-4o") -> Dict[str, Any]:
++    """
++    测试中转 API 连接
++
++    Returns:
++        {"success": bool, "message": str, "models": list}
++    """
++    headers = {
++        "Content-Type": "application/json",
++        "Authorization": f"Bearer {api_key}"
++    }
++
++    try:
++        models_endpoint = f"{base_url.rstrip('/')}/models"
++        response = requests.get(models_endpoint, headers=headers, timeout=10)
++
++        if response.status_code == 200:
++            models = response.json().get('data', [])
++            model_ids = [m.get('id', '') for m in models]
++            return {
++                "success": True,
++                "message": "连接成功",
++                "models": model_ids
++            }
++        else:
++            return {
++                "success": False,
++                "message": f"连接失败: HTTP {response.status_code}",
++                "models": []
++            }
++    except requests.exceptions.RequestException as e:
++        return {
++            "success": False,
++            "message": f"连接失败: {e}",
++            "models": []
++        }
+Index: omnitool/omnibox/.idea/misc.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/omnitool/omnibox/.idea/misc.xml b/omnitool/omnibox/.idea/misc.xml
+new file mode 100644
+--- /dev/null	(date 1739883445501)
++++ b/omnitool/omnibox/.idea/misc.xml	(date 1739883445501)
+@@ -0,0 +1,6 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<project version="4">
++  <component name="ProjectRootManager" version="2" languageLevel="JDK_1_8" default="true" project-jdk-name="1.8" project-jdk-type="JavaSDK">
++    <output url="file://$PROJECT_DIR$/out" />
++  </component>
++</project>
+\ No newline at end of file
+Index: omnitool/gradio/llm_config.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/omnitool/gradio/llm_config.py b/omnitool/gradio/llm_config.py
+new file mode 100644
+--- /dev/null	(date 1769861250112)
++++ b/omnitool/gradio/llm_config.py	(date 1769861250112)
+@@ -0,0 +1,102 @@
++"""
++LLM 中转 API 配置管理模块
++支持 Codex 和 Claude 中转 API 的配置读取和保存
++"""
++import json
++import os
++from pathlib import Path
++from typing import Dict, Any, Optional
++
++CONFIG_FILE_NAME = "llm_config.json"
++
++def get_config_path() -> Path:
++    """获取配置文件路径"""
++    current_dir = Path(__file__).parent
++    return current_dir / CONFIG_FILE_NAME
++
++def load_config() -> Dict[str, Any]:
++    """加载配置文件"""
++    config_path = get_config_path()
++
++    if not config_path.exists():
++        return get_default_config()
++
++    try:
++        with open(config_path, 'r', encoding='utf-8') as f:
++            return json.load(f)
++    except (json.JSONDecodeError, IOError) as e:
++        print(f"加载配置文件失败: {e}，使用默认配置")
++        return get_default_config()
++
++def save_config(config: Dict[str, Any]) -> bool:
++    """保存配置文件"""
++    config_path = get_config_path()
++
++    try:
++        with open(config_path, 'w', encoding='utf-8') as f:
++            json.dump(config, f, indent=2, ensure_ascii=False)
++        return True
++    except IOError as e:
++        print(f"保存配置文件失败: {e}")
++        return False
++
++def get_default_config() -> Dict[str, Any]:
++    """获取默认配置"""
++    return {
++        "providers": {
++            "codex_proxy": {
++                "name": "Codex 中转",
++                "base_url": "https://right.codes/codex/v1",
++                "api_key": "",
++                "default_model": "gpt-5.2-codex",
++                "available_models": ["gpt-5.2-codex", "gpt-5.2", "gpt-5.1-codex-max", "gpt-5.1-codex", "gpt-5.1", "gpt-5-codex"]
++            },
++            "claude_proxy": {
++                "name": "Claude 中转",
++                "base_url": "https://api.anthropic.com",
++                "api_key": "",
++                "default_model": "claude-3-5-sonnet-20241022",
++                "available_models": ["claude-3-5-sonnet-20241022", "claude-3-opus-20240229", "claude-3-haiku-20240307"]
++            }
++        },
++        "default_provider": "codex_proxy"
++    }
++
++def get_provider_config(provider_key: str) -> Optional[Dict[str, Any]]:
++    """获取指定 provider 的配置"""
++    config = load_config()
++    return config.get("providers", {}).get(provider_key)
++
++def get_all_providers() -> Dict[str, Dict[str, Any]]:
++    """获取所有 provider 配置"""
++    config = load_config()
++    return config.get("providers", {})
++
++def get_provider_choices() -> list:
++    """获取 provider 选择列表，用于 Gradio Dropdown"""
++    providers = get_all_providers()
++    return [(v["name"], k) for k, v in providers.items()]
++
++def update_provider_config(provider_key: str, **kwargs) -> bool:
++    """更新指定 provider 的配置"""
++    config = load_config()
++
++    if provider_key not in config.get("providers", {}):
++        return False
++
++    for key, value in kwargs.items():
++        if value is not None:
++            config["providers"][provider_key][key] = value
++
++    return save_config(config)
++
++def get_default_provider() -> str:
++    """获取默认 provider"""
++    config = load_config()
++    return config.get("default_provider", "codex_proxy")
++
++def set_default_provider(provider_key: str) -> bool:
++    """设置默认 provider"""
++    config = load_config()
++    config["default_provider"] = provider_key
++    return save_config(config)
+Index: omnitool/omniparserserver/omniparserserver.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/omnitool/omniparserserver/omniparserserver.py b/omnitool/omniparserserver/omniparserserver.py
+--- a/omnitool/omniparserserver/omniparserserver.py	(revision b0d5c9f5701f7e2be4771872e6e928da77759df3)
++++ b/omnitool/omniparserserver/omniparserserver.py	(date 1763841889843)
+@@ -36,16 +36,23 @@
+ 
+ @app.post("/parse/")
+ async def parse(parse_request: ParseRequest):
+-    print('start parsing...')
+-    start = time.time()
+-    dino_labled_img, parsed_content_list = omniparser.parse(parse_request.base64_image)
+-    latency = time.time() - start
+-    print('time:', latency)
+-    return {"som_image_base64": dino_labled_img, "parsed_content_list": parsed_content_list, 'latency': latency}
++    try:
++        print('[DEBUG] start parsing...')
++        print(f'[DEBUG] Received image base64 length: {len(parse_request.base64_image)}')
++        start = time.time()
++        dino_labled_img, parsed_content_list = omniparser.parse(parse_request.base64_image)
++        latency = time.time() - start
++        print(f'[DEBUG] Parsing completed in {latency:.2f}s')
++        return {"som_image_base64": dino_labled_img, "parsed_content_list": parsed_content_list, 'latency': latency}
++    except Exception as e:
++        print(f'[ERROR] Exception occurred: {type(e).__name__}: {str(e)}')
++        import traceback
++        traceback.print_exc()
++        raise
+ 
+ @app.get("/probe/")
+ async def root():
+     return {"message": "Omniparser API ready"}
+ 
+ if __name__ == "__main__":
+-    uvicorn.run("omniparserserver:app", host=args.host, port=args.port, reload=True)
+\ No newline at end of file
++    uvicorn.run("omniparserserver:app", host=args.host, port=args.port, reload=False)
+\ No newline at end of file
+Index: omnitool/gradio/agent/vlm_agent.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/omnitool/gradio/agent/vlm_agent.py b/omnitool/gradio/agent/vlm_agent.py
+--- a/omnitool/gradio/agent/vlm_agent.py	(revision b0d5c9f5701f7e2be4771872e6e928da77759df3)
++++ b/omnitool/gradio/agent/vlm_agent.py	(date 1769863675053)
+@@ -12,6 +12,7 @@
+ 
+ from agent.llm_utils.oaiclient import run_oai_interleaved
+ from agent.llm_utils.groqclient import run_groq_interleaved
++from agent.llm_utils.proxy_client import run_proxy_interleaved
+ from agent.llm_utils.utils import is_image_path
+ import time
+ import re
+@@ -30,15 +31,21 @@
+ class VLMAgent:
+     def __init__(
+         self,
+-        model: str, 
+-        provider: str, 
++        model: str,
++        provider: str,
+         api_key: str,
+-        output_callback: Callable, 
++        output_callback: Callable,
+         api_response_callback: Callable,
+         max_tokens: int = 4096,
+         only_n_most_recent_images: int | None = None,
+         print_usage: bool = True,
++        proxy_base_url: str = None,
++        proxy_model: str = None,
+     ):
++        self.proxy_base_url = proxy_base_url
++        self.use_proxy = proxy_base_url is not None
++        self.proxy_model = proxy_model
++
+         if model == "omniparser + gpt-4o":
+             self.model = "gpt-4o-2024-11-20"
+         elif model == "omniparser + R1":
+@@ -49,6 +56,16 @@
+             self.model = "o1"
+         elif model == "omniparser + o3-mini":
+             self.model = "o3-mini"
++        elif model == "omniparser + glm-4.5v":
++            self.model = "glm-4.5v"
++        elif model == "omniparser + glm-4v-plus":
++            self.model = "glm-4v-plus-0111"
++        elif model == "omniparser + glm-4v-flash":
++            self.model = "glm-4v-flash"
++        elif model == "omniparser + glm-4.6":
++            self.model = "glm-4.6"
++        elif model == "omniparser + proxy":
++            self.model = proxy_model if proxy_model else "gpt-4o"
+         else:
+             raise ValueError(f"Model {model} not supported")
+         
+@@ -91,7 +108,20 @@
+             planner_messages[-1]["content"].append(f"{OUTPUT_DIR}/screenshot_som_{screenshot_uuid}.png")
+ 
+         start = time.time()
+-        if "gpt" in self.model or "o1" in self.model or "o3-mini" in self.model:
++        if self.use_proxy:
++            vlm_response, token_usage = run_proxy_interleaved(
++                messages=planner_messages,
++                system=system,
++                model_name=self.model,
++                api_key=self.api_key,
++                base_url=self.proxy_base_url,
++                max_tokens=self.max_tokens,
++                temperature=0,
++            )
++            print(f"proxy token usage: {token_usage}")
++            self.total_token_usage += token_usage
++            self.total_cost += (token_usage * 2.5 / 1000000)
++        elif "gpt" in self.model or "o1" in self.model or "o3-mini" in self.model:
+             vlm_response, token_usage = run_oai_interleaved(
+                 messages=planner_messages,
+                 system=system,
+@@ -104,11 +134,11 @@
+             print(f"oai token usage: {token_usage}")
+             self.total_token_usage += token_usage
+             if 'gpt' in self.model:
+-                self.total_cost += (token_usage * 2.5 / 1000000)  # https://openai.com/api/pricing/
++                self.total_cost += (token_usage * 2.5 / 1000000)
+             elif 'o1' in self.model:
+-                self.total_cost += (token_usage * 15 / 1000000)  # https://openai.com/api/pricing/
++                self.total_cost += (token_usage * 15 / 1000000)
+             elif 'o3-mini' in self.model:
+-                self.total_cost += (token_usage * 1.1 / 1000000)  # https://openai.com/api/pricing/
++                self.total_cost += (token_usage * 1.1 / 1000000)
+         elif "r1" in self.model:
+             vlm_response, token_usage = run_groq_interleaved(
+                 messages=planner_messages,
+@@ -133,18 +163,46 @@
+             print(f"qwen token usage: {token_usage}")
+             self.total_token_usage += token_usage
+             self.total_cost += (token_usage * 2.2 / 1000000)  # https://help.aliyun.com/zh/model-studio/getting-started/models?spm=a2c4g.11186623.0.0.74b04823CGnPv7#fe96cfb1a422a
++        elif "glm" in self.model:
++            vlm_response, token_usage = run_oai_interleaved(
++                messages=planner_messages,
++                system=system,
++                model_name=self.model,
++                api_key=self.api_key,
++                max_tokens=self.max_tokens,
++                provider_base_url="https://open.bigmodel.cn/api/paas/v4",
++                temperature=0.6,
++            )
++            print(f"zhipu glm token usage: {token_usage}")
++            self.total_token_usage += token_usage
++            # GLM-4.5V: 输入¥0.05/千tokens, 输出¥0.05/千tokens (平均)
++            # GLM-4V-Plus: 输入¥0.01/千tokens, 输出¥0.01/千tokens
++            # GLM-4V-Flash: 免费
++            if "4.5v" in self.model:
++                self.total_cost += (token_usage * 0.05 / 1000)
++            elif "plus" in self.model:
++                self.total_cost += (token_usage * 0.01 / 1000)
++            # flash 免费,不计费
+         else:
+             raise ValueError(f"Model {self.model} not supported")
+         latency_vlm = time.time() - start
+         self.output_callback(f"LLM: {latency_vlm:.2f}s, OmniParser: {latency_omniparser:.2f}s", sender="bot")
+ 
+-        print(f"{vlm_response}")
+-        
++        print(f"[DEBUG] LLM Response: {vlm_response}")
++
+         if self.print_usage:
+             print(f"Total token so far: {self.total_token_usage}. Total cost so far: $USD{self.total_cost:.5f}")
+-        
++
+         vlm_response_json = extract_data(vlm_response, "json")
+-        vlm_response_json = json.loads(vlm_response_json)
++        try:
++            vlm_response_json = json.loads(vlm_response_json)
++        except json.JSONDecodeError as e:
++            print(f"[ERROR] Failed to parse JSON from LLM response: {vlm_response_json}")
++            print(f"[ERROR] Original response: {vlm_response}")
++            vlm_response_json = {
++                "Reasoning": f"LLM returned non-JSON response: {vlm_response}",
++                "Next Action": "None"
++            }
+ 
+         img_to_show_base64 = parsed_screen["som_image_base64"]
+         if "Box ID" in vlm_response_json:
+@@ -209,28 +267,20 @@
+ 
+     def _get_system_prompt(self, screen_info: str = ""):
+         main_section = f"""
+-You are using a Windows device.
+-You are able to use a mouse and keyboard to interact with the computer based on the given task and screenshot.
+-You can only interact with the desktop GUI (no terminal or application menu access).
++You are analyzing a screenshot to help navigate a GUI. Your task is to output a JSON object describing the next action.
+ 
+-You may be given some history plan and actions, this is the response from the previous loop.
+-You should carefully consider your plan base on the task, screenshot, and history actions.
++You will be given:
++1. A screenshot of the current screen
++2. A list of detected UI elements with their IDs and descriptions
+ 
+-Here is the list of all detected bounding boxes by IDs on the screen and their description:{screen_info}
++Your job is to analyze the screenshot and return a JSON object with your reasoning and the next action to take.
+ 
+-Your available "Next Action" only include:
+-- type: types a string of text.
+-- left_click: move mouse to box id and left clicks.
+-- right_click: move mouse to box id and right clicks.
+-- double_click: move mouse to box id and double clicks.
+-- hover: move mouse to box id.
+-- scroll_up: scrolls the screen up to view previous content.
+-- scroll_down: scrolls the screen down, when the desired button is not visible, or you need to see more content. 
+-- wait: waits for 1 second for the device to load or respond.
++Detected UI elements:
++{screen_info}
+ 
+-Based on the visual information from the screenshot image and the detected bounding boxes, please determine the next action, the Box ID you should operate on (if action is one of 'type', 'hover', 'scroll_up', 'scroll_down', 'wait', there should be no Box ID field), and the value (if the action is 'type') in order to complete the task.
++Available actions: left_click, right_click, double_click, type, scroll_up, scroll_down, wait
+ 
+-Output format:
++You must respond with ONLY a JSON object in this format:
+ ```json
+ {{
+     "Reasoning": str, # describe what is in the current screen, taking into account the history, then describe your step-by-step thoughts on how to achieve the task, choose one action from available actions at a time.
+Index: util/omniparser.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/util/omniparser.py b/util/omniparser.py
+--- a/util/omniparser.py	(revision b0d5c9f5701f7e2be4771872e6e928da77759df3)
++++ b/util/omniparser.py	(date 1763870464495)
+@@ -17,7 +17,7 @@
+         image_bytes = base64.b64decode(image_base64)
+         image = Image.open(io.BytesIO(image_bytes))
+         print('image size:', image.size)
+-        
++
+         box_overlay_ratio = max(image.size) / 3200
+         draw_bbox_config = {
+             'text_scale': 0.8 * box_overlay_ratio,
+@@ -27,6 +27,26 @@
+         }
+ 
+         (text, ocr_bbox), _ = check_ocr_box(image, display_img=False, output_bb_format='xyxy', easyocr_args={'text_threshold': 0.8}, use_paddleocr=False)
+-        dino_labled_img, label_coordinates, parsed_content_list = get_som_labeled_img(image, self.som_model, BOX_TRESHOLD = self.config['BOX_TRESHOLD'], output_coord_in_ratio=True, ocr_bbox=ocr_bbox,draw_bbox_config=draw_bbox_config, caption_model_processor=self.caption_model_processor, ocr_text=text,use_local_semantics=True, iou_threshold=0.7, scale_img=False, batch_size=128)
++
++        # 使用更小的 batch_size 以减少内存使用
++        # 在 CPU 模式下,batch_size=16 约占用 600-800MB 内存
++        # 在 GPU 模式下,可以使用 batch_size=128 (约 4GB)
++        device = self.caption_model_processor['model'].device
++        batch_size = 128 if str(device) != 'cpu' else 16
++
++        dino_labled_img, label_coordinates, parsed_content_list = get_som_labeled_img(
++            image,
++            self.som_model,
++            BOX_TRESHOLD=self.config['BOX_TRESHOLD'],
++            output_coord_in_ratio=True,
++            ocr_bbox=ocr_bbox,
++            draw_bbox_config=draw_bbox_config,
++            caption_model_processor=self.caption_model_processor,
++            ocr_text=text,
++            use_local_semantics=True,
++            iou_threshold=0.7,
++            scale_img=False,
++            batch_size=batch_size
++        )
+ 
+         return dino_labled_img, parsed_content_list
+\ No newline at end of file
+Index: omnitool/gradio/agent/llm_utils/omniparserclient.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/omnitool/gradio/agent/llm_utils/omniparserclient.py b/omnitool/gradio/agent/llm_utils/omniparserclient.py
+--- a/omnitool/gradio/agent/llm_utils/omniparserclient.py	(revision b0d5c9f5701f7e2be4771872e6e928da77759df3)
++++ b/omnitool/gradio/agent/llm_utils/omniparserclient.py	(date 1763869279444)
+@@ -15,9 +15,28 @@
+         screenshot, screenshot_path = get_screenshot()
+         screenshot_path = str(screenshot_path)
+         image_base64 = encode_image(screenshot_path)
+-        response = requests.post(self.url, json={"base64_image": image_base64})
+-        response_json = response.json()
+-        print('omniparser latency:', response_json['latency'])
++        print(f"[DEBUG] Sending request to: {self.url}")
++        print(f"[DEBUG] Image base64 length: {len(image_base64)}")
++
++        try:
++            response = requests.post(self.url, json={"base64_image": image_base64}, timeout=120)
++            print(f"[DEBUG] Response status code: {response.status_code}")
++            print(f"[DEBUG] Response headers: {response.headers}")
++
++            if response.status_code != 200:
++                print(f"[ERROR] OmniParser server returned error {response.status_code}")
++                print(f"[ERROR] Response text: {response.text}")
++                raise Exception(f"OmniParser server error {response.status_code}: {response.text}")
++
++            response_json = response.json()
++            print('omniparser latency:', response_json['latency'])
++        except requests.exceptions.JSONDecodeError as e:
++            print(f"[ERROR] Failed to decode JSON response")
++            print(f"[ERROR] Response text: {response.text}")
++            raise Exception(f"Invalid JSON response from OmniParser server: {response.text}") from e
++        except requests.exceptions.RequestException as e:
++            print(f"[ERROR] Request to OmniParser server failed: {str(e)}")
++            raise Exception(f"Failed to connect to OmniParser server at {self.url}") from e
+ 
+         som_image_data = base64.b64decode(response_json['som_image_base64'])
+         screenshot_path_uuid = Path(screenshot_path).stem.replace("screenshot_", "")
+Index: omnitool/gradio/tools/screen_capture.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/omnitool/gradio/tools/screen_capture.py b/omnitool/gradio/tools/screen_capture.py
+--- a/omnitool/gradio/tools/screen_capture.py	(revision b0d5c9f5701f7e2be4771872e6e928da77759df3)
++++ b/omnitool/gradio/tools/screen_capture.py	(date 1763821479461)
+@@ -1,5 +1,7 @@
+ from pathlib import Path
+ from uuid import uuid4
++
++import pyautogui
+ import requests
+ from PIL import Image
+ from .base import BaseAnthropicTool, ToolError
+@@ -7,23 +9,50 @@
+ 
+ OUTPUT_DIR = "./tmp/outputs"
+ 
++#注释下面的代码
++
++# def get_screenshot(resize: bool = False, target_width: int = 1920, target_height: int = 1080):
++#     """Capture screenshot by requesting from HTTP endpoint - returns native resolution unless resized"""
++#     output_dir = Path(OUTPUT_DIR)
++#     output_dir.mkdir(parents=True, exist_ok=True)
++#     path = output_dir / f"screenshot_{uuid4().hex}.png"
++#
++#     try:
++#         response = requests.get('http://localhost:5000/screenshot')
++#         if response.status_code != 200:
++#             raise ToolError(f"Failed to capture screenshot: HTTP {response.status_code}")
++#
++#         # (1280, 800)
++#         screenshot = Image.open(BytesIO(response.content))
++#
++#         if resize and screenshot.size != (target_width, target_height):
++#             screenshot = screenshot.resize((target_width, target_height))
++#         screenshot.save(path)
++#         return screenshot, path
++#     except Exception as e:
++#         raise ToolError(f"Failed to capture screenshot: {str(e)}")
++
++
+ def get_screenshot(resize: bool = False, target_width: int = 1920, target_height: int = 1080):
+-    """Capture screenshot by requesting from HTTP endpoint - returns native resolution unless resized"""
++    """Capture screenshot locally and resize if needed, then save it to a file."""
++    # 创建保存截图的目录
+     output_dir = Path(OUTPUT_DIR)
+     output_dir.mkdir(parents=True, exist_ok=True)
++
++    # 生成唯一的文件名
+     path = output_dir / f"screenshot_{uuid4().hex}.png"
+-    
++
+     try:
+-        response = requests.get('http://localhost:5000/screenshot')
+-        if response.status_code != 200:
+-            raise ToolError(f"Failed to capture screenshot: HTTP {response.status_code}")
+-        
+-        # (1280, 800)
+-        screenshot = Image.open(BytesIO(response.content))
+-        
++        # 使用 pyautogui 获取当前屏幕截图
++        screenshot = pyautogui.screenshot()
++
++        # 如果需要调整大小
+         if resize and screenshot.size != (target_width, target_height):
+             screenshot = screenshot.resize((target_width, target_height))
++
++        # 保存截图
+         screenshot.save(path)
++
+         return screenshot, path
+     except Exception as e:
+-        raise ToolError(f"Failed to capture screenshot: {str(e)}")
+\ No newline at end of file
++        raise Exception(f"Failed to capture screenshot: {str(e)}")
+\ No newline at end of file
+Index: omnitool/test_omniparser_direct.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/omnitool/test_omniparser_direct.py b/omnitool/test_omniparser_direct.py
+new file mode 100644
+--- /dev/null	(date 1763870352629)
++++ b/omnitool/test_omniparser_direct.py	(date 1763870352629)
+@@ -0,0 +1,82 @@
++"""
++直接测试 OmniParser 而不通过 HTTP 服务器
++"""
++import sys
++from pathlib import Path
++
++# 添加项目根目录到 Python 路径
++project_root = Path(__file__).parent.parent
++sys.path.insert(0, str(project_root))
++
++from util.omniparser import Omniparser
++import traceback
++
++# 添加 gradio 目录到路径以导入工具
++import sys
++gradio_dir = project_root / 'omnitool' / 'gradio'
++sys.path.insert(0, str(gradio_dir))
++
++from tools.screen_capture import get_screenshot
++from agent.llm_utils.utils import encode_image
++
++def test_omniparser_direct():
++    """直接测试 OmniParser,绕过 HTTP 服务器"""
++    print("=" * 80)
++    print("开始直接测试 OmniParser")
++    print("=" * 80)
++
++    # 配置
++    config = {
++        'som_model_path': str(project_root / 'weights' / 'icon_detect' / 'model.pt'),
++        'caption_model_name': 'florence2',
++        'caption_model_path': str(project_root / 'weights' / 'icon_caption_florence'),
++        'device': 'cpu',
++        'BOX_TRESHOLD': 0.05
++    }
++
++    try:
++        # 初始化 OmniParser
++        print("\n[INFO] 正在初始化 OmniParser...")
++        omniparser = Omniparser(config)
++        print("[SUCCESS] OmniParser 初始化成功!\n")
++
++        # 获取屏幕截图
++        print("[INFO] 正在获取屏幕截图...")
++        screenshot, screenshot_path = get_screenshot()
++        screenshot_path = str(screenshot_path)
++        print(f"[SUCCESS] 截图保存在: {screenshot_path}\n")
++
++        # 编码图像为 base64
++        print("[INFO] 正在将截图编码为 base64...")
++        image_base64 = encode_image(screenshot_path)
++        print(f"[SUCCESS] 图像编码成功,长度: {len(image_base64)}\n")
++
++        # 调用 omniparser.parse()
++        print("[INFO] 正在调用 omniparser.parse()...")
++        print("[INFO] 这可能需要一些时间,请耐心等待...")
++
++        dino_labled_img, parsed_content_list = omniparser.parse(image_base64)
++
++        print("\n[SUCCESS] OmniParser 解析成功!")
++        print(f"[INFO] 解析到 {len(parsed_content_list)} 个元素")
++        print(f"[INFO] 前 5 个元素:")
++        for i, item in enumerate(parsed_content_list[:5]):
++            print(f"  {i}: {item}")
++
++        print("\n" + "=" * 80)
++        print("测试成功完成!")
++        print("=" * 80)
++
++    except Exception as e:
++        print(f"\n[ERROR] 发生异常: {type(e).__name__}: {str(e)}")
++        print("\n完整堆栈追踪:")
++        traceback.print_exc()
++        print("\n" + "=" * 80)
++        print("测试失败")
++        print("=" * 80)
++        return False
++
++    return True
++
++if __name__ == "__main__":
++    test_omniparser_direct()
+Index: omnitool/gradio/test_glm_taobao.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/omnitool/gradio/test_glm_taobao.py b/omnitool/gradio/test_glm_taobao.py
+new file mode 100644
+--- /dev/null	(date 1763840437336)
++++ b/omnitool/gradio/test_glm_taobao.py	(date 1763840437336)
+@@ -0,0 +1,102 @@
++"""
++GLM 模型淘宝测试脚本
++使用 OmniParser + GLM-4.5V 模型测试打开淘宝网站
++"""
++import sys
++from pathlib import Path
++
++# 添加项目根目录到 Python 路径
++project_root = Path(__file__).parent.parent.parent
++sys.path.insert(0, str(project_root))
++
++from anthropic.types import TextBlock
++from loop import sampling_loop_sync
++from functools import partial
++
++class GLMTaobaoTester:
++    def __init__(self, omniparser_server_url="localhost:8000", model_name="glm-4.6"):
++        """
++        初始化测试器
++
++        Args:
++            omniparser_server_url: OmniParser Server 地址
++            model_name: GLM 模型名称,默认 glm-4.6
++        """
++        self.model_name = model_name
++        self.model = f"omniparser + {model_name}"
++        self.provider = "zhipu"
++        self.api_key = "70931c95e7c24296a004b4288da87d79.6lNzdgSQgyLUrMvP"
++        self.omniparser_server_url = omniparser_server_url
++        self.messages = []
++        self.only_n_most_recent_images = 2
++        self.max_tokens = 16384
++
++    def output_callback(self, message, sender="bot"):
++        """输出回调,打印消息"""
++        print(f"[{sender.upper()}] {message}")
++
++    def tool_output_callback(self, tool_result, tool_id):
++        """工具输出回调"""
++        print(f"[TOOL {tool_id}] {tool_result}")
++
++    def api_response_callback(self, response):
++        """API 响应回调"""
++        print(f"[API] Response received")
++
++    def run_test(self, task="打开淘宝网站"):
++        """
++        运行测试
++
++        Args:
++            task: 要执行的任务描述
++        """
++        print("=" * 80)
++        print(f"GLM 淘宝测试开始")
++        print(f"模型: {self.model}")
++        print(f"任务: {task}")
++        print("=" * 80)
++
++        # 构造初始消息
++        self.messages = [
++            {
++                "role": "user",
++                "content": [TextBlock(type="text", text=task)],
++            }
++        ]
++
++        try:
++            # 运行采样循环
++            for loop_msg in sampling_loop_sync(
++                model=self.model,
++                provider=self.provider,
++                messages=self.messages,
++                output_callback=self.output_callback,
++                tool_output_callback=self.tool_output_callback,
++                api_response_callback=self.api_response_callback,
++                api_key=self.api_key,
++                only_n_most_recent_images=self.only_n_most_recent_images,
++                max_tokens=self.max_tokens,
++                omniparser_url=self.omniparser_server_url
++            ):
++                if loop_msg is None:
++                    print("\n[INFO] 任务完成或循环结束")
++                    break
++
++        except KeyboardInterrupt:
++            print("\n[INFO] 用户中断测试")
++        except Exception as e:
++            print(f"\n[ERROR] 测试过程中出现异常: {type(e).__name__}: {str(e)}")
++            import traceback
++            traceback.print_exc()
++        finally:
++            print("=" * 80)
++            print("GLM 淘宝测试结束")
++            print("=" * 80)
++
++
++if __name__ == "__main__":
++    # 创建测试器
++    tester = GLMTaobaoTester()
++
++    # 运行测试
++    tester.run_test("打开淘宝网站")
+Index: omnitool/gradio/tools/computer.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/omnitool/gradio/tools/computer.py b/omnitool/gradio/tools/computer.py
+--- a/omnitool/gradio/tools/computer.py	(revision b0d5c9f5701f7e2be4771872e6e928da77759df3)
++++ b/omnitool/gradio/tools/computer.py	(date 1763822949764)
+@@ -1,7 +1,18 @@
+ import base64
+ import time
+-from enum import StrEnum
+-from typing import Literal, TypedDict
++import pyautogui
++from enum import Enum
++import sys
++from typing import Literal, TypedDict
++
++# Python 3.10 兼容性: StrEnum 在 3.11+ 才有
++if sys.version_info >= (3, 11):
++    from enum import StrEnum
++else:
++    class StrEnum(str, Enum):
++        """Python 3.10 的 StrEnum 兼容实现"""
++        def __str__(self):
++            return str(self.value)
+ 
+ from PIL import Image
+ 
+@@ -41,7 +52,9 @@
+ MAX_SCALING_TARGETS: dict[str, Resolution] = {
+     "XGA": Resolution(width=1024, height=768),  # 4:3
+     "WXGA": Resolution(width=1280, height=800),  # 16:10
+-    "FWXGA": Resolution(width=1366, height=768),  # ~16:9
++    "FWXGA": Resolution(width=1366, height=768),
++    "MAX_FWXGA": Resolution(width=25690, height=1440),
++
+ }
+ 
+ 
+@@ -96,7 +109,7 @@
+         self.offset_x = 0
+         self.offset_y = 0
+         self.is_scaling = is_scaling
+-        self.width, self.height = self.get_screen_size()
++        self.width, self.height = self.get_local_screen_size()
+         print(f"screen size: {self.width}, {self.height}")
+ 
+         self.key_conversion = {"Page_Down": "pagedown",
+@@ -131,6 +144,10 @@
+                 )
+             else:
+                 x, y = coordinate
++            screen_width, screen_height = pyautogui.size()
++            # Ensure x and y are within screen bounds
++            x = min(max(x, 0), screen_width - 1)
++            y = min(max(y, 0), screen_height - 1)
+ 
+             # print(f"scaled_coordinates: {x}, {y}")
+             # print(f"offset: {self.offset_x}, {self.offset_y}")
+@@ -141,11 +158,11 @@
+             print(f"mouse move to {x}, {y}")
+             
+             if action == "mouse_move":
+-                self.send_to_vm(f"pyautogui.moveTo({x}, {y})")
++                self.send_to_local(f"pyautogui.moveTo({x}, {y})")
+                 return ToolResult(output=f"Moved mouse to ({x}, {y})")
+             elif action == "left_click_drag":
+-                current_x, current_y = self.send_to_vm("pyautogui.position()")
+-                self.send_to_vm(f"pyautogui.dragTo({x}, {y}, duration=0.5)")
++                current_x, current_y = self.send_to_local("pyautogui.position()")
++                self.send_to_local(f"pyautogui.dragTo({x}, {y}, duration=0.5)")
+                 return ToolResult(output=f"Dragged mouse from ({current_x}, {current_y}) to ({x}, {y})")
+ 
+         if action in ("key", "type"):
+@@ -162,18 +179,18 @@
+                 for key in keys:
+                     key = self.key_conversion.get(key.strip(), key.strip())
+                     key = key.lower()
+-                    self.send_to_vm(f"pyautogui.keyDown('{key}')")  # Press down each key
++                    self.send_to_local(f"pyautogui.keyDown('{key}')")  # Press down each key
+                 for key in reversed(keys):
+                     key = self.key_conversion.get(key.strip(), key.strip())
+                     key = key.lower()
+-                    self.send_to_vm(f"pyautogui.keyUp('{key}')")    # Release each key in reverse order
++                    self.send_to_local(f"pyautogui.keyUp('{key}')")    # Release each key in reverse order
+                 return ToolResult(output=f"Pressed keys: {text}")
+             
+             elif action == "type":
+                 # default click before type TODO: check if this is needed
+-                self.send_to_vm("pyautogui.click()")
+-                self.send_to_vm(f"pyautogui.typewrite('{text}', interval={TYPING_DELAY_MS / 1000})")
+-                self.send_to_vm("pyautogui.press('enter')")
++                self.send_to_local("pyautogui.click()")
++                self.send_to_local(f"pyautogui.typewrite('{text}', interval={TYPING_DELAY_MS / 1000})")
++                self.send_to_local("pyautogui.press('enter')")
+                 screenshot_base64 = (await self.screenshot()).base64_image
+                 return ToolResult(output=text, base64_image=screenshot_base64)
+ 
+@@ -194,28 +211,28 @@
+             if action == "screenshot":
+                 return await self.screenshot()
+             elif action == "cursor_position":
+-                x, y = self.send_to_vm("pyautogui.position()")
++                x, y = self.send_to_local("pyautogui.position()")
+                 x, y = self.scale_coordinates(ScalingSource.COMPUTER, x, y)
+                 return ToolResult(output=f"X={x},Y={y}")
+             else:
+                 if action == "left_click":
+-                    self.send_to_vm("pyautogui.click()")
++                    self.send_to_local("pyautogui.click()")
+                 elif action == "right_click":
+-                    self.send_to_vm("pyautogui.rightClick()")
++                    self.send_to_local("pyautogui.rightClick()")
+                 elif action == "middle_click":
+-                    self.send_to_vm("pyautogui.middleClick()")
++                    self.send_to_local("pyautogui.middleClick()")
+                 elif action == "double_click":
+-                    self.send_to_vm("pyautogui.doubleClick()")
++                    self.send_to_local("pyautogui.doubleClick()")
+                 elif action == "left_press":
+-                    self.send_to_vm("pyautogui.mouseDown()")
++                    self.send_to_local("pyautogui.mouseDown()")
+                     time.sleep(1)
+-                    self.send_to_vm("pyautogui.mouseUp()")
++                    self.send_to_local("pyautogui.mouseUp()")
+                 return ToolResult(output=f"Performed {action}")
+         if action in ("scroll_up", "scroll_down"):
+             if action == "scroll_up":
+-                self.send_to_vm("pyautogui.scroll(100)")
++                self.send_to_local("pyautogui.scroll(100)")
+             elif action == "scroll_down":
+-                self.send_to_vm("pyautogui.scroll(-100)")
++                self.send_to_local("pyautogui.scroll(-100)")
+             return ToolResult(output=f"Performed {action}")
+         if action == "hover":
+             return ToolResult(output=f"Performed {action}")
+@@ -224,37 +241,48 @@
+             return ToolResult(output=f"Performed {action}")
+         raise ToolError(f"Invalid action: {action}")
+ 
+-    def send_to_vm(self, action: str):
+-        """
+-        Executes a python command on the server. Only return tuple of x,y when action is "pyautogui.position()"
+-        """
++    # def send_to_vm(self, action: str):
++    #     """
++    #     Executes a python command on the server. Only return tuple of x,y when action is "pyautogui.position()"
++    #     """
++    #     prefix = "import pyautogui; pyautogui.FAILSAFE = False;"
++    #     command_list = ["python", "-c", f"{prefix} {action}"]
++    #     parse = action == "pyautogui.position()"
++    #     if parse:
++    #         command_list[-1] = f"{prefix} print({action})"
++    #
++    #     try:
++    #         print(f"sending to vm: {command_list}")
++    #         response = requests.post(
++    #             f"http://localhost:5000/execute",
++    #             headers={'Content-Type': 'application/json'},
++    #             json={"command": command_list},
++    #             timeout=90
++    #         )
++    #         time.sleep(0.7) # avoid async error as actions take time to complete
++    #         print(f"action executed")
++    #         if response.status_code != 200:
++    #             raise ToolError(f"Failed to execute command. Status code: {response.status_code}")
++    #         if parse:
++    #             output = response.json()['output'].strip()
++    #             match = re.search(r'Point\(x=(\d+),\s*y=(\d+)\)', output)
++    #             if not match:
++    #                 raise ToolError(f"Could not parse coordinates from output: {output}")
++    #             x, y = map(int, match.groups())
++    #             return x, y
++    #     except requests.exceptions.RequestException as e:
++    #         raise ToolError(f"An error occurred while trying to execute the command: {str(e)}")
++    #
++
++    def send_to_local(self, action: str):
++        """ Executes a python command directly on the local machine. """
+         prefix = "import pyautogui; pyautogui.FAILSAFE = False;"
+-        command_list = ["python", "-c", f"{prefix} {action}"]
+-        parse = action == "pyautogui.position()"
+-        if parse:
+-            command_list[-1] = f"{prefix} print({action})"
++        command = f"{prefix} {action}"
+ 
+-        try:
+-            print(f"sending to vm: {command_list}")
+-            response = requests.post(
+-                f"http://localhost:5000/execute", 
+-                headers={'Content-Type': 'application/json'},
+-                json={"command": command_list},
+-                timeout=90
+-            )
+-            time.sleep(0.7) # avoid async error as actions take time to complete
+-            print(f"action executed")
+-            if response.status_code != 200:
+-                raise ToolError(f"Failed to execute command. Status code: {response.status_code}")
+-            if parse:
+-                output = response.json()['output'].strip()
+-                match = re.search(r'Point\(x=(\d+),\s*y=(\d+)\)', output)
+-                if not match:
+-                    raise ToolError(f"Could not parse coordinates from output: {output}")
+-                x, y = map(int, match.groups())
+-                return x, y
+-        except requests.exceptions.RequestException as e:
+-            raise ToolError(f"An error occurred while trying to execute the command: {str(e)}")
++        if action == "pyautogui.position()":
++            return pyautogui.position()  # directly return position if querying position
++        else:
++            exec(command)  # directly execute pyautogui commands on local machine
+ 
+     async def screenshot(self):
+         if not hasattr(self, 'target_dimension'):
+@@ -279,12 +307,16 @@
+         """Scale coordinates to a target maximum resolution."""
+         if not self._scaling_enabled:
+             return x, y
++        # 计算当前屏幕的宽高比
+         ratio = self.width / self.height
+         target_dimension = None
+ 
++        # 遍历定义的目标分辨率，找到与当前屏幕宽高比相近的目标分辨率
+         for target_name, dimension in MAX_SCALING_TARGETS.items():
+             # allow some error in the aspect ratio - not ratios are exactly 16:9
++            # 允许一定误差范围来匹配宽高比（例如16:9不是严格精确的，可能是16:10）
+             if abs(dimension["width"] / dimension["height"] - ratio) < 0.02:
++                # 如果目标分辨率的宽度小于当前屏幕的宽度，选择该目标分辨率作为目标
+                 if dimension["width"] < self.width:
+                     target_dimension = dimension
+                     self.target_dimension = target_dimension
+@@ -307,23 +339,30 @@
+         # scale down
+         return round(x * x_scaling_factor), round(y * y_scaling_factor)
+ 
+-    def get_screen_size(self):
+-        """Return width and height of the screen"""
+-        try:
+-            response = requests.post(
+-                f"http://localhost:5000/execute",
+-                headers={'Content-Type': 'application/json'},
+-                json={"command": ["python", "-c", "import pyautogui; print(pyautogui.size())"]},
+-                timeout=90
+-            )
+-            if response.status_code != 200:
+-                raise ToolError(f"Failed to get screen size. Status code: {response.status_code}")
+-            
+-            output = response.json()['output'].strip()
+-            match = re.search(r'Size\(width=(\d+),\s*height=(\d+)\)', output)
+-            if not match:
+-                raise ToolError(f"Could not parse screen size from output: {output}")
+-            width, height = map(int, match.groups())
+-            return width, height
+-        except requests.exceptions.RequestException as e:
+-            raise ToolError(f"An error occurred while trying to get screen size: {str(e)}")
+\ No newline at end of file
++
++    def get_local_screen_size(self):
++        """ Returns width and height of the local screen """
++        import pyautogui
++        screen_width, screen_height = pyautogui.size()
++        return screen_width, screen_height
++
++    # def get_screen_size(self):
++    #     """Return width and height of the screen"""
++    #     try:
++    #         response = requests.post(
++    #             f"http://localhost:5000/execute",
++    #             headers={'Content-Type': 'application/json'},
++    #             json={"command": ["python", "-c", "import pyautogui; print(pyautogui.size())"]},
++    #             timeout=90
++    #         )
++    #         if response.status_code != 200:
++    #             raise ToolError(f"Failed to get screen size. Status code: {response.status_code}")
++    #
++    #         output = response.json()['output'].strip()
++    #         match = re.search(r'Size\(width=(\d+),\s*height=(\d+)\)', output)
++    #         if not match:
++    #             raise ToolError(f"Could not parse screen size from output: {output}")
++    #         width, height = map(int, match.groups())
++    #         return width, height
++    #     except requests.exceptions.RequestException as e:
++    #         raise ToolError(f"An error occurred while trying to get screen size: {str(e)}")
+\ No newline at end of file
+Index: omnitool/gradio/app.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/omnitool/gradio/app.py b/omnitool/gradio/app.py
+--- a/omnitool/gradio/app.py	(revision b0d5c9f5701f7e2be4771872e6e928da77759df3)
++++ b/omnitool/gradio/app.py	(date 1769864416915)
+@@ -4,8 +4,18 @@
+ 
+ import os
+ from datetime import datetime
+-from enum import StrEnum
+-from functools import partial
++from enum import Enum
++from functools import partial
++import sys
++
++# Python 3.10 兼容性: StrEnum 在 3.11+ 才有
++if sys.version_info >= (3, 11):
++    from enum import StrEnum
++else:
++    class StrEnum(str, Enum):
++        """Python 3.10 的 StrEnum 兼容实现"""
++        def __str__(self):
++            return str(self.value)
+ from pathlib import Path
+ from typing import cast
+ import argparse
+@@ -19,6 +29,8 @@
+     sampling_loop_sync,
+ )
+ from tools import ToolResult
++from llm_config import load_config, save_config, get_provider_config, get_all_providers
++from agent.llm_utils.proxy_client import test_proxy_connection, run_proxy_interleaved
+ import requests
+ from requests.exceptions import RequestException
+ import base64
+@@ -27,16 +39,56 @@
+ API_KEY_FILE = CONFIG_DIR / "api_key"
+ 
+ INTRO_TEXT = '''
+-OmniParser lets you turn any vision-langauge model into an AI agent. We currently support **OpenAI (4o/o1/o3-mini), DeepSeek (R1), Qwen (2.5VL) or Anthropic Computer Use (Sonnet).**
++OmniParser 让你可以将任何视觉语言模型转换为 AI 代理。支持 **Codex 中转 / Claude 中转** 以及 OpenAI、DeepSeek、Qwen、Anthropic 等。
+ 
+-Type a message and press submit to start OmniTool. Press stop to pause, and press the trash icon in the chat to clear the message history.
++输入消息并点击发送开始使用。点击停止暂停，点击垃圾桶图标清除历史。
+ '''
++
++def get_proxy_choices():
++    """获取中转 provider 选项"""
++    providers = get_all_providers()
++    return [(v["name"], k) for k, v in providers.items()]
++
++def get_proxy_models(provider_key: str):
++    """获取指定中转 provider 的可用模型"""
++    provider = get_provider_config(provider_key)
++    if provider:
++        return provider.get("available_models", [])
++    return []
++
++def test_llm_connection(base_url: str, api_key: str, model: str):
++    """
++    测试 LLM 连通性
++    返回测试结果字符串
++    """
++    if not base_url or not api_key:
++        return "❌ 请先填写 API Base URL 和 API Key"
++
++    try:
++        response, tokens = run_proxy_interleaved(
++            messages=[{"content": ["Hello, please respond with 'OK' only."]}],
++            system="You are a helpful assistant. Respond with only 'OK'.",
++            model_name=model,
++            api_key=api_key,
++            base_url=base_url,
++            max_tokens=10,
++            temperature=0,
++        )
++
++        if "错误" in response or "失败" in response or "Error" in response:
++            return f"❌ 连接失败: {response}"
++
++        return f"✅ 连接成功!\n模型: {model}\n响应: {response}\nTokens: {tokens}"
++
++    except Exception as e:
++        return f"❌ 连接失败: {str(e)}"
+ 
+ def parse_arguments():
+ 
+     parser = argparse.ArgumentParser(description="Gradio App")
+     parser.add_argument("--windows_host_url", type=str, default='localhost:8006')
+     parser.add_argument("--omniparser_server_url", type=str, default="localhost:8000")
++    parser.add_argument("--local", action="store_true", help="本地模式，直接控制本机桌面")
+     return parser.parse_args()
+ args = parse_arguments()
+ 
+@@ -50,16 +102,32 @@
+ def setup_state(state):
+     if "messages" not in state:
+         state["messages"] = []
++
++    llm_config = load_config()
++    default_provider_key = llm_config.get("default_provider", "codex_proxy")
++    default_provider = llm_config.get("providers", {}).get(default_provider_key, {})
++
+     if "model" not in state:
+-        state["model"] = "omniparser + gpt-4o"
++        state["model"] = "omniparser-only"
+     if "provider" not in state:
+-        state["provider"] = "openai"
+-    if "openai_api_key" not in state:  # Fetch API keys from environment variables
++        state["provider"] = default_provider_key
++    if "proxy_provider" not in state:
++        state["proxy_provider"] = default_provider_key
++    if "proxy_base_url" not in state:
++        state["proxy_base_url"] = default_provider.get("base_url", "")
++    if "proxy_model" not in state:
++        state["proxy_model"] = default_provider.get("default_model", "gpt-4o")
++
++    if "openai_api_key" not in state:
+         state["openai_api_key"] = os.getenv("OPENAI_API_KEY", "")
+     if "anthropic_api_key" not in state:
+         state["anthropic_api_key"] = os.getenv("ANTHROPIC_API_KEY", "")
++    if "zhipu_api_key" not in state:
++        state["zhipu_api_key"] = "70931c95e7c24296a004b4288da87d79.6lNzdgSQgyLUrMvP"
++
+     if "api_key" not in state:
+-        state["api_key"] = ""
++        state["api_key"] = default_provider.get("api_key", "")
++
+     if "auth_validated" not in state:
+         state["auth_validated"] = False
+     if "responses" not in state:
+@@ -189,16 +257,16 @@
+ def valid_params(user_input, state):
+     """Validate all requirements and return a list of error messages."""
+     errors = []
+-    
+-    for server_name, url in [('Windows Host', 'localhost:5000'), ('OmniParser Server', args.omniparser_server_url)]:
+-        try:
+-            url = f'http://{url}/probe'
+-            response = requests.get(url, timeout=3)
+-            if response.status_code != 200:
+-                errors.append(f"{server_name} is not responding")
+-        except RequestException as e:
+-            errors.append(f"{server_name} is not responding")
+-    
++
++    # 本地模式只需要检查 OmniParser Server,不需要 Windows Host
++    try:
++        url = f'http://{args.omniparser_server_url}/probe'
++        response = requests.get(url, timeout=3)
++        if response.status_code != 200:
++            errors.append(f"OmniParser Server is not responding")
++    except RequestException as e:
++        errors.append(f"OmniParser Server is not responding. Please start it first: cd omnitool/omniparserserver && python -m omniparserserver")
++
+     if not state["api_key"].strip():
+         errors.append("LLM API Key is not set")
+ 
+@@ -231,7 +299,10 @@
+     print("state")
+     print(state)
+ 
+-    # Run sampling_loop_sync with the chatbot_output_callback
++    is_proxy_mode = state.get("model") == "omniparser + proxy"
++    proxy_base_url = state.get("proxy_base_url") if is_proxy_mode else None
++    proxy_model = state.get("proxy_model") if is_proxy_mode else None
++
+     for loop_msg in sampling_loop_sync(
+         model=state["model"],
+         provider=state["provider"],
+@@ -242,7 +313,9 @@
+         api_key=state["api_key"],
+         only_n_most_recent_images=state["only_n_most_recent_images"],
+         max_tokens=16384,
+-        omniparser_url=args.omniparser_server_url
++        omniparser_url=args.omniparser_server_url,
++        proxy_base_url=proxy_base_url,
++        proxy_model=proxy_model,
+     ):  
+         if loop_msg is None or state.get("stop"):
+             yield state['chatbot_messages']
+@@ -297,38 +370,80 @@
+         gr.Markdown(INTRO_TEXT, elem_classes="markdown-text")
+ 
+ 
+-    with gr.Accordion("Settings", open=True): 
++    llm_config = load_config()
++    default_provider_key = llm_config.get("default_provider", "codex_proxy")
++    default_provider = llm_config.get("providers", {}).get(default_provider_key, {})
++
++    with gr.Accordion("中转 API 设置", open=True):
+         with gr.Row():
+             with gr.Column():
+-                model = gr.Dropdown(
+-                    label="Model",
+-                    choices=["omniparser + gpt-4o", "omniparser + o1", "omniparser + o3-mini", "omniparser + R1", "omniparser + qwen2.5vl", "claude-3-5-sonnet-20241022", "omniparser + gpt-4o-orchestrated", "omniparser + o1-orchestrated", "omniparser + o3-mini-orchestrated", "omniparser + R1-orchestrated", "omniparser + qwen2.5vl-orchestrated"],
+-                    value="omniparser + gpt-4o",
++                proxy_provider = gr.Dropdown(
++                    label="选择中转服务",
++                    choices=get_proxy_choices(),
++                    value=default_provider_key,
++                    interactive=True,
++                )
++            with gr.Column():
++                proxy_model = gr.Dropdown(
++                    label="选择模型",
++                    choices=default_provider.get("available_models", []),
++                    value=default_provider.get("default_model", "gpt-4o"),
++                    interactive=True,
++                )
++        with gr.Row():
++            with gr.Column():
++                proxy_base_url = gr.Textbox(
++                    label="API Base URL",
++                    value=default_provider.get("base_url", ""),
+                     interactive=True,
+                 )
++            with gr.Column():
++                api_key = gr.Textbox(
++                    label="API Key",
++                    type="password",
++                    value=default_provider.get("api_key", ""),
++                    placeholder="输入 API Key",
++                    interactive=True,
++                )
++        with gr.Row():
+             with gr.Column():
+                 only_n_images = gr.Slider(
+-                    label="N most recent screenshots",
++                    label="保留最近截图数量",
+                     minimum=0,
+                     maximum=10,
+                     step=1,
+                     value=2,
+                     interactive=True
+                 )
++            with gr.Column():
++                test_btn = gr.Button(
++                    value="🔌 测试连接",
++                    variant="secondary",
++                    size="sm",
++                )
++        with gr.Row():
++            test_result = gr.Textbox(
++                label="连接测试结果",
++                value="",
++                interactive=False,
++                lines=3,
++                visible=True,
++            )
++
++    with gr.Accordion("原始设置（高级）", open=False):
+         with gr.Row():
+-            with gr.Column(1):
++            with gr.Column():
++                model = gr.Dropdown(
++                    label="Model",
++                    choices=["omniparser-only", "omniparser + proxy", "omniparser + glm-4.6", "omniparser + gpt-4o", "claude-3-5-sonnet-20241022"],
++                    value="omniparser-only",
++                    interactive=True,
++                )
++            with gr.Column():
+                 provider = gr.Dropdown(
+                     label="API Provider",
+                     choices=[option.value for option in APIProvider],
+-                    value="openai",
+-                    interactive=False,
+-                )
+-            with gr.Column(2):
+-                api_key = gr.Textbox(
+-                    label="API Key",
+-                    type="password",
+-                    value=state.value.get("api_key", ""),
+-                    placeholder="Paste your API key here",
++                    value="codex_proxy",
+                     interactive=True,
+                 )
+ 
+@@ -344,16 +459,32 @@
+         with gr.Column(scale=2):
+             chatbot = gr.Chatbot(label="Chatbot History", autoscroll=True, height=580)
+         with gr.Column(scale=3):
+-            iframe = gr.HTML(
+-                f'<iframe src="http://{args.windows_host_url}/vnc.html?view_only=1&autoconnect=1&resize=scale" width="100%" height="580" allow="fullscreen"></iframe>',
+-                container=False,
+-                elem_classes="no-padding"
+-            )
++            if args.local:
++                local_info = gr.HTML(
++                    '''
++                    <div style="height: 580px; display: flex; flex-direction: column; align-items: center; justify-content: center; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border-radius: 8px; color: white;">
++                        <h2 style="margin-bottom: 20px;">🖥️ 本地控制模式</h2>
++                        <p style="color: #888; margin-bottom: 10px;">AI 将直接控制您的电脑桌面</p>
++                        <p style="color: #666; font-size: 12px;">请确保重要工作已保存</p>
++                        <div style="margin-top: 30px; padding: 15px; background: rgba(255,255,255,0.1); border-radius: 8px;">
++                            <p style="color: #4ade80; margin: 0;">✅ 本地模式已启用</p>
++                        </div>
++                    </div>
++                    ''',
++                    container=False,
++                    elem_classes="no-padding"
++                )
++            else:
++                iframe = gr.HTML(
++                    f'<iframe src="http://{args.windows_host_url}/vnc.html?view_only=1&autoconnect=1&resize=scale" width="100%" height="580" allow="fullscreen"></iframe>',
++                    container=False,
++                    elem_classes="no-padding"
++                )
+ 
+     def update_model(model_selection, state):
+         state["model"] = model_selection
+         print(f"Model updated to: {state['model']}")
+-        
++
+         if model_selection == "claude-3-5-sonnet-20241022":
+             provider_choices = [option.value for option in APIProvider if option.value != "openai"]
+         elif model_selection in set(["omniparser + gpt-4o", "omniparser + o1", "omniparser + o3-mini", "omniparser + gpt-4o-orchestrated", "omniparser + o1-orchestrated", "omniparser + o3-mini-orchestrated"]):
+@@ -362,6 +493,8 @@
+             provider_choices = ["groq"]
+         elif model_selection == "omniparser + qwen2.5vl":
+             provider_choices = ["dashscope"]
++        elif model_selection in set(["omniparser + glm-4.5v", "omniparser + glm-4v-plus", "omniparser + glm-4v-flash", "omniparser + glm-4.6"]):
++            provider_choices = ["zhipu"]
+         else:
+             provider_choices = [option.value for option in APIProvider]
+         default_provider_value = provider_choices[0]
+@@ -405,6 +538,37 @@
+         state["api_key"] = api_key_value
+         state[f'{state["provider"]}_api_key'] = api_key_value
+ 
++    def update_proxy_provider(proxy_provider_value, state):
++        """切换中转 provider 时更新配置"""
++        provider_config = get_provider_config(proxy_provider_value)
++        if provider_config:
++            state["proxy_provider"] = proxy_provider_value
++            state["proxy_base_url"] = provider_config.get("base_url", "")
++            state["api_key"] = provider_config.get("api_key", "")
++            state["proxy_model"] = provider_config.get("default_model", "gpt-4o")
++            state["provider"] = proxy_provider_value
++
++            return (
++                gr.update(choices=provider_config.get("available_models", []),
++                         value=provider_config.get("default_model", "gpt-4o")),
++                gr.update(value=provider_config.get("base_url", "")),
++                gr.update(value=provider_config.get("api_key", "")),
++            )
++        return gr.update(), gr.update(), gr.update()
++
++    def update_proxy_model(proxy_model_value, state):
++        """切换模型时更新 state"""
++        state["proxy_model"] = proxy_model_value
++
++    def update_proxy_base_url(base_url_value, state):
++        """更新 base_url"""
++        state["proxy_base_url"] = base_url_value
++
++    def do_test_connection(base_url, api_key_value, model, state):
++        """执行连接测试"""
++        result = test_llm_connection(base_url, api_key_value, model)
++        return result
++
+     def clear_chat(state):
+         # Reset message-related state
+         state["messages"] = []
+@@ -413,6 +577,20 @@
+         state['chatbot_messages'] = []
+         return state['chatbot_messages']
+ 
++    proxy_provider.change(
++        fn=update_proxy_provider,
++        inputs=[proxy_provider, state],
++        outputs=[proxy_model, proxy_base_url, api_key]
++    )
++    proxy_model.change(fn=update_proxy_model, inputs=[proxy_model, state], outputs=None)
++    proxy_base_url.change(fn=update_proxy_base_url, inputs=[proxy_base_url, state], outputs=None)
++
++    test_btn.click(
++        fn=do_test_connection,
++        inputs=[proxy_base_url, api_key, proxy_model, state],
++        outputs=[test_result]
++    )
++
+     model.change(fn=update_model, inputs=[model, state], outputs=[provider, api_key])
+     only_n_images.change(fn=update_only_n_images, inputs=[only_n_images, state], outputs=None)
+     provider.change(fn=update_provider, inputs=[provider, state], outputs=api_key)
+Index: omnitool/gradio/loop.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/omnitool/gradio/loop.py b/omnitool/gradio/loop.py
+--- a/omnitool/gradio/loop.py	(revision b0d5c9f5701f7e2be4771872e6e928da77759df3)
++++ b/omnitool/gradio/loop.py	(date 1769864389849)
+@@ -2,7 +2,17 @@
+ Agentic sampling loop that calls the Anthropic API and local implenmentation of anthropic-defined computer use tools.
+ """
+ from collections.abc import Callable
+-from enum import StrEnum
++from enum import Enum
++import sys
++
++# Python 3.10 兼容性: StrEnum 在 3.11+ 才有
++if sys.version_info >= (3, 11):
++    from enum import StrEnum
++else:
++    class StrEnum(str, Enum):
++        """Python 3.10 的 StrEnum 兼容实现"""
++        def __str__(self):
++            return str(self.value)
+ 
+ from anthropic import APIResponse
+ from anthropic.types import (
+@@ -28,6 +38,9 @@
+     BEDROCK = "bedrock"
+     VERTEX = "vertex"
+     OPENAI = "openai"
++    ZHIPU = "zhipu"
++    CODEX_PROXY = "codex_proxy"
++    CLAUDE_PROXY = "claude_proxy"
+ 
+ 
+ PROVIDER_TO_DEFAULT_MODEL_NAME: dict[APIProvider, str] = {
+@@ -35,6 +48,9 @@
+     APIProvider.BEDROCK: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+     APIProvider.VERTEX: "claude-3-5-sonnet-v2@20241022",
+     APIProvider.OPENAI: "gpt-4o",
++    APIProvider.ZHIPU: "glm-4.5v",
++    APIProvider.CODEX_PROXY: "gpt-4o",
++    APIProvider.CLAUDE_PROXY: "claude-3-5-sonnet-20241022",
+ }
+ 
+ def sampling_loop_sync(
+@@ -49,7 +65,9 @@
+     only_n_most_recent_images: int | None = 2,
+     max_tokens: int = 4096,
+     omniparser_url: str,
+-    save_folder: str = "./uploads"
++    save_folder: str = "./uploads",
++    proxy_base_url: str = None,
++    proxy_model: str = None,
+ ):
+     """
+     Synchronous agentic sampling loop for the assistant/tool interaction of computer use.
+@@ -66,7 +84,7 @@
+             max_tokens=max_tokens,
+             only_n_most_recent_images=only_n_most_recent_images
+         )
+-    elif model in set(["omniparser + gpt-4o", "omniparser + o1", "omniparser + o3-mini", "omniparser + R1", "omniparser + qwen2.5vl"]):
++    elif model in set(["omniparser + gpt-4o", "omniparser + o1", "omniparser + o3-mini", "omniparser + R1", "omniparser + qwen2.5vl", "omniparser + glm-4.5v", "omniparser + glm-4v-plus", "omniparser + glm-4v-flash", "omniparser + glm-4.6", "omniparser + proxy"]):
+         actor = VLMAgent(
+             model=model,
+             provider=provider,
+@@ -74,7 +92,9 @@
+             api_response_callback=api_response_callback,
+             output_callback=output_callback,
+             max_tokens=max_tokens,
+-            only_n_most_recent_images=only_n_most_recent_images
++            only_n_most_recent_images=only_n_most_recent_images,
++            proxy_base_url=proxy_base_url,
++            proxy_model=proxy_model,
+         )
+     elif model in set(["omniparser + gpt-4o-orchestrated", "omniparser + o1-orchestrated", "omniparser + o3-mini-orchestrated", "omniparser + R1-orchestrated", "omniparser + qwen2.5vl-orchestrated"]):
+         actor = VLMOrchestratedAgent(
+@@ -94,10 +114,34 @@
+         tool_output_callback=tool_output_callback,
+     )
+     print(f"Model Inited: {model}, Provider: {provider}")
+-    
++
+     tool_result_content = None
+-    
++
+     print(f"Start the message loop. User messages: {messages}")
++
++    if model == "omniparser-only":
++        print("[INFO] OmniParser-only mode: 仅解析截图，不调用 LLM")
++        parsed_screen = omniparser_client()
++
++        result_text = f"""
++## 截图解析完成
++
++**屏幕尺寸**: {parsed_screen['width']} x {parsed_screen['height']}
++**解析耗时**: {parsed_screen['latency']:.2f}s
++**检测到的 UI 元素数量**: {len(parsed_screen['parsed_content_list'])}
++
++### UI 元素列表:
++```
++{parsed_screen['screen_info']}
++```
++"""
++        output_callback(result_text)
++
++        som_img_html = f'<img src="data:image/png;base64,{parsed_screen["som_image_base64"]}" style="max-width:100%;">'
++        output_callback(som_img_html)
++
++        yield result_text
++        return messages
+     
+     if model == "claude-3-5-sonnet-20241022": # Anthropic loop
+         while True:
+@@ -115,9 +159,11 @@
+ 
+             messages.append({"content": tool_result_content, "role": "user"})
+     
+-    elif model in set(["omniparser + gpt-4o", "omniparser + o1", "omniparser + o3-mini", "omniparser + R1", "omniparser + qwen2.5vl", "omniparser + gpt-4o-orchestrated", "omniparser + o1-orchestrated", "omniparser + o3-mini-orchestrated", "omniparser + R1-orchestrated", "omniparser + qwen2.5vl-orchestrated"]):
++    elif model in set(["omniparser + gpt-4o", "omniparser + o1", "omniparser + o3-mini", "omniparser + R1", "omniparser + qwen2.5vl", "omniparser + glm-4.5v", "omniparser + glm-4v-plus", "omniparser + glm-4v-flash", "omniparser + glm-4.6", "omniparser + gpt-4o-orchestrated", "omniparser + o1-orchestrated", "omniparser + o3-mini-orchestrated", "omniparser + R1-orchestrated", "omniparser + qwen2.5vl-orchestrated", "omniparser + proxy"]):
+         while True:
++            print("[DEBUG] Calling omniparser_client()...")
+             parsed_screen = omniparser_client()
++            print(f"[DEBUG] Got parsed_screen, calling actor...")
+             tools_use_needed, vlm_response_json = actor(messages=messages, parsed_screen=parsed_screen)
+ 
+             for message, tool_result_content in executor(tools_use_needed, messages):

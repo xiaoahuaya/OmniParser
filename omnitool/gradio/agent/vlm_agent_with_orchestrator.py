@@ -263,6 +263,11 @@ class VLMOrchestratedAgent:
                                         input={'action': vlm_response_json["Next Action"], 'text': vlm_response_json["value"]},
                                         name='computer', type='tool_use')
             response_content.append(sim_content_block)
+        elif vlm_response_json["Next Action"] == "key":
+            sim_content_block = BetaToolUseBlock(id=f'toolu_{uuid.uuid4()}',
+                                        input={'action': vlm_response_json["Next Action"], 'text': vlm_response_json["value"]},
+                                        name='computer', type='tool_use')
+            response_content.append(sim_content_block)
         else:
             sim_content_block = BetaToolUseBlock(id=f'toolu_{uuid.uuid4()}',
                                             input={'action': vlm_response_json["Next Action"]},
@@ -302,12 +307,13 @@ Here is the list of all detected bounding boxes by IDs on the screen and their d
 
 Your available "Next Action" only include:
 - type: types a string of text.
+- key: presses keyboard shortcuts (e.g., "ctrl+a" for select all, "ctrl+c" for copy, "ctrl+v" for paste).
 - left_click: move mouse to box id and left clicks.
 - right_click: move mouse to box id and right clicks.
 - double_click: move mouse to box id and double clicks.
 - hover: move mouse to box id.
 - scroll_up: scrolls the screen up to view previous content.
-- scroll_down: scrolls the screen down, when the desired button is not visible, or you need to see more content. 
+- scroll_down: scrolls the screen down, when the desired button is not visible, or you need to see more content.
 - wait: waits for 1 second for the device to load or respond.
 
 Based on the visual information from the screenshot image and the detected bounding boxes, please determine the next action, the Box ID you should operate on (if action is one of 'type', 'hover', 'scroll_up', 'scroll_down', 'wait', there should be no Box ID field), and the value (if the action is 'type') in order to complete the task.
@@ -366,7 +372,7 @@ IMPORTANT NOTES:
 """
         main_section += """
 3. Attach the next action prediction in the "Next Action".
-4. You should not include other actions, such as keyboard shortcuts.
+4. You can use "key" action for keyboard shortcuts like "ctrl+a" (select all), "ctrl+c" (copy), "ctrl+v" (paste), "enter", "backspace", etc.
 5. When the task is completed, don't complete additional actions. You should say "Next Action": "None" in the json field.
 6. The tasks involve buying multiple products or navigating through multiple pages. You should break it into subgoals and complete each subgoal one by one in the order of the instructions.
 7. avoid choosing the same action/elements multiple times in a row, if it happens, reflect to yourself, what may have gone wrong, and predict a different action.
