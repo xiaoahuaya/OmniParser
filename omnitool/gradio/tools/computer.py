@@ -27,11 +27,15 @@ OUTPUT_DIR = "./tmp/outputs"
 
 TYPING_DELAY_MS = 12
 TYPING_GROUP_SIZE = 50
+HOVER_DELAY_SEC = 0.3
+DRAG_DURATION_SEC = 0.5
 
 Action = Literal[
     "key",
     "type",
+    "type_submit",
     "mouse_move",
+    "drag",
     "left_click",
     "left_click_drag",
     "right_click",
@@ -110,7 +114,6 @@ class ComputerTool(BaseAnthropicTool):
         self.offset_y = 0
         self.is_scaling = is_scaling
         self.width, self.height = self.get_local_screen_size()
-        print(f"screen size: {self.width}, {self.height}")
 
         self.key_conversion = {"Page_Down": "pagedown",
                                "Page_Up": "pageup",
@@ -124,9 +127,44 @@ class ComputerTool(BaseAnthropicTool):
         action: Action,
         text: str | None = None,
         coordinate: tuple[int, int] | None = None,
+        start_coordinate: tuple[int, int] | None = None,
+        end_coordinate: tuple[int, int] | None = None,
         **kwargs,
     ):
-        print(f"action: {action}, text: {text}, coordinate: {coordinate}, is_scaling: {self.is_scaling}")
+        # Keep runtime output minimal; detailed logs are intentionally omitted.
+        if action == "drag":
+            if start_coordinate is None or end_coordinate is None:
+                raise ToolError("start_coordinate and end_coordinate are required for drag")
+            if not isinstance(start_coordinate, (list, tuple)) or len(start_coordinate) != 2:
+                raise ToolError(f"{start_coordinate} must be a tuple of length 2")
+            if not isinstance(end_coordinate, (list, tuple)) or len(end_coordinate) != 2:
+                raise ToolError(f"{end_coordinate} must be a tuple of length 2")
+            if not all(isinstance(i, int) for i in start_coordinate):
+                raise ToolError(f"{start_coordinate} must be a tuple of ints")
+            if not all(isinstance(i, int) for i in end_coordinate):
+                raise ToolError(f"{end_coordinate} must be a tuple of ints")
+
+            if self.is_scaling:
+                start_x, start_y = self.scale_coordinates(
+                    ScalingSource.API, start_coordinate[0], start_coordinate[1]
+                )
+                end_x, end_y = self.scale_coordinates(
+                    ScalingSource.API, end_coordinate[0], end_coordinate[1]
+                )
+            else:
+                start_x, start_y = start_coordinate
+                end_x, end_y = end_coordinate
+
+            screen_width, screen_height = pyautogui.size()
+            start_x = min(max(start_x, 0), screen_width - 1)
+            start_y = min(max(start_y, 0), screen_height - 1)
+            end_x = min(max(end_x, 0), screen_width - 1)
+            end_y = min(max(end_y, 0), screen_height - 1)
+
+            self.send_to_local(f"pyautogui.moveTo({start_x}, {start_y})")
+            self.send_to_local(f"pyautogui.dragTo({end_x}, {end_y}, duration={DRAG_DURATION_SEC})")
+            return ToolResult(output=f"Dragged mouse from ({start_x}, {start_y}) to ({end_x}, {end_y})")
+
         if action in ("mouse_move", "left_click_drag"):
             if coordinate is None:
                 raise ToolError(f"coordinate is required for {action}")
@@ -155,8 +193,6 @@ class ComputerTool(BaseAnthropicTool):
             # x += self.offset_x # TODO - check if this is needed
             # y += self.offset_y
 
-            print(f"mouse move to {x}, {y}")
-            
             if action == "mouse_move":
                 self.send_to_local(f"pyautogui.moveTo({x}, {y})")
                 return ToolResult(output=f"Moved mouse to ({x}, {y})")
@@ -165,7 +201,7 @@ class ComputerTool(BaseAnthropicTool):
                 self.send_to_local(f"pyautogui.dragTo({x}, {y}, duration=0.5)")
                 return ToolResult(output=f"Dragged mouse from ({current_x}, {current_y}) to ({x}, {y})")
 
-        if action in ("key", "type"):
+        if action in ("key", "type", "type_submit"):
             if text is None:
                 raise ToolError(f"text is required for {action}")
             if coordinate is not None:
@@ -186,15 +222,23 @@ class ComputerTool(BaseAnthropicTool):
                     self.send_to_local(f"pyautogui.keyUp('{key}')")    # Release each key in reverse order
                 return ToolResult(output=f"Pressed keys: {text}")
             
-            elif action == "type":
+            elif action in ("type", "type_submit"):
                 self.send_to_local("pyautogui.click()")
 
                 clean_text = text.strip().replace('\n', '').replace('\r', '')
                 if clean_text:
-                    safe_text = clean_text.replace("'", "\\'").replace('"', '\\"')
-                    self.send_to_local(f"pyautogui.typewrite('{safe_text}', interval={TYPING_DELAY_MS / 1000})")
+                    # 使用剪贴板复制粘贴，支持中文
+                    import pyperclip
+                    pyperclip.copy(clean_text)
+                    time.sleep(0.1)
+                    # Ctrl+V 粘贴
+                    self.send_to_local("pyautogui.keyDown('ctrl')")
+                    self.send_to_local("pyautogui.press('v')")
+                    self.send_to_local("pyautogui.keyUp('ctrl')")
+                    time.sleep(0.2)
 
-                self.send_to_local("pyautogui.press('enter')")
+                if action == "type_submit":
+                    self.send_to_local("pyautogui.press('enter')")
                 screenshot_base64 = (await self.screenshot()).base64_image
                 return ToolResult(output=text, base64_image=screenshot_base64)
 
@@ -239,6 +283,22 @@ class ComputerTool(BaseAnthropicTool):
                 self.send_to_local("pyautogui.scroll(-100)")
             return ToolResult(output=f"Performed {action}")
         if action == "hover":
+            if coordinate is not None:
+                if not isinstance(coordinate, (list, tuple)) or len(coordinate) != 2:
+                    raise ToolError(f"{coordinate} must be a tuple of length 2")
+                if not all(isinstance(i, int) for i in coordinate):
+                    raise ToolError(f"{coordinate} must be a tuple of ints")
+                if self.is_scaling:
+                    x, y = self.scale_coordinates(
+                        ScalingSource.API, coordinate[0], coordinate[1]
+                    )
+                else:
+                    x, y = coordinate
+                screen_width, screen_height = pyautogui.size()
+                x = min(max(x, 0), screen_width - 1)
+                y = min(max(y, 0), screen_height - 1)
+                self.send_to_local(f"pyautogui.moveTo({x}, {y})")
+            time.sleep(HOVER_DELAY_SEC)
             return ToolResult(output=f"Performed {action}")
         if action == "wait":
             time.sleep(1)
@@ -283,19 +343,14 @@ class ComputerTool(BaseAnthropicTool):
         prefix = "import pyautogui; pyautogui.FAILSAFE = False;"
         command = f"{prefix} {action}"
 
-        print(f"[PYAUTOGUI] 执行: {action}")
-
         if action == "pyautogui.position()":
             pos = pyautogui.position()
-            print(f"[PYAUTOGUI] 当前鼠标位置: {pos}")
             return pos
         else:
             exec(command)
-            print(f"[PYAUTOGUI] 完成: {action}")
 
     async def screenshot(self):
         if not hasattr(self, 'target_dimension'):
-            screenshot = self.padding_image(screenshot)
             self.target_dimension = MAX_SCALING_TARGETS["WXGA"]
         width, height = self.target_dimension["width"], self.target_dimension["height"]
         screenshot, path = get_screenshot(resize=True, target_width=width, target_height=height)

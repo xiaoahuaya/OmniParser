@@ -15,21 +15,14 @@ class OmniParserClient:
         screenshot, screenshot_path = get_screenshot()
         screenshot_path = str(screenshot_path)
         image_base64 = encode_image(screenshot_path)
-        print(f"[DEBUG] Sending request to: {self.url}")
-        print(f"[DEBUG] Image base64 length: {len(image_base64)}")
+        # Request OmniParser server; keep console output minimal.
 
         try:
             response = requests.post(self.url, json={"base64_image": image_base64}, timeout=120)
-            print(f"[DEBUG] Response status code: {response.status_code}")
-            print(f"[DEBUG] Response headers: {response.headers}")
-
             if response.status_code != 200:
-                print(f"[ERROR] OmniParser server returned error {response.status_code}")
-                print(f"[ERROR] Response text: {response.text}")
                 raise Exception(f"OmniParser server error {response.status_code}: {response.text}")
 
             response_json = response.json()
-            print('omniparser latency:', response_json['latency'])
         except requests.exceptions.JSONDecodeError as e:
             print(f"[ERROR] Failed to decode JSON response")
             print(f"[ERROR] Response text: {response.text}")

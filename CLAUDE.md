@@ -47,9 +47,8 @@ python app.py --windows_host_url localhost:8006 --omniparser_server_url localhos
 
 ### 测试
 ```bash
-pytest                          # 运行所有测试
-pytest tests/test_xxx.py        # 运行单个测试文件
-pytest tests/test_xxx.py::test_function  # 运行单个测试函数
+pytest                                      # 运行所有测试
+pytest omnitool/test_omniparser_direct.py   # 运行 OmniParser 直接测试
 ```
 
 ### 代码检查
@@ -95,6 +94,11 @@ ruff check .
 - `oaiclient.py`: OpenAI API (GPT-4o, O1, O3-mini)
 - `groqclient.py`: Groq API (DeepSeek R1)
 - `omniparserclient.py`: OmniParser Server 客户端
+- `proxy_client.py`: 统一中转 API 客户端 (OpenAI 兼容格式)
+
+### 配置管理 (`omnitool/gradio/llm_config.py`)
+
+中转 API 配置管理，支持多 provider 配置（如 Codex/Claude 中转）。配置文件：`omnitool/gradio/llm_config.json`
 
 ## 关键设计决策
 
@@ -102,6 +106,11 @@ ruff check .
 2. **批处理**: caption 推理使用批处理优化 GPU 利用率
 3. **图像过滤**: 代理循环仅保留最近 N 张图像管理 context 长度
 4. **坐标系统**: 统一使用比例坐标 (0-1) 便于跨分辨率适配
+5. **屏幕变化检测**: 代理循环通过下采样灰度像素比较检测屏幕是否变化，避免重复无效操作
+
+## 环境变量
+
+- `OMNITOOL_DEBUG`: 设为 `1`/`true`/`yes` 启用调试日志
 
 ## 注意事项
 

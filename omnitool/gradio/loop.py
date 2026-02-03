@@ -2,6 +2,10 @@
 Agentic sampling loop that calls the Anthropic API and local implenmentation of anthropic-defined computer use tools.
 """
 from collections.abc import Callable
+import base64
+from io import BytesIO
+from PIL import Image
+import time
 from enum import Enum
 import sys
 
@@ -32,6 +36,126 @@ from agent.vlm_agent_with_orchestrator import VLMOrchestratedAgent
 from executor.anthropic_executor import AnthropicExecutor
 
 BETA_FLAG = "computer-use-2024-10-22"
+
+SCREEN_DIFF_SIZE = 32
+SCREEN_DIFF_THRESHOLD = 0.015
+NO_CHANGE_LIMIT = 2
+NO_CHANGE_HINT = (
+    "The previous action did not change the screen. Try a different approach "
+    "(double-click, click a slightly different target, scroll, or wait longer)."
+)
+
+REPEAT_COORD_THRESHOLD = 50
+REPEAT_COORD_LIMIT = 3
+REPEAT_COORD_HINT = (
+    "⚠️ 检测到连续 {count} 次点击相同位置 {coord}，但屏幕没有变化。"
+    "请尝试完全不同的方法：滚动页面、点击其他元素、使用键盘快捷键、或等待页面加载。"
+    "如果目标元素不可交互，请跳过此步骤。"
+)
+
+PLAN_STEP_RETRY_LIMIT = 5
+PLAN_STEP_SKIP_MSG = "⚠️ 当前步骤重试 {count} 次未成功，自动跳过到下一步。"
+
+OPTIMISTIC_ACTION_LIMIT = 1
+OPTIMISTIC_ADVANCE_MSG = "⏩ 动作已执行但未检测到成功条件，乐观前进尝试下一步。"
+OPTIMISTIC_CONSECUTIVE_LIMIT = 3
+OPTIMISTIC_STOP_MSG = "⚠️ 连续 {count} 步乐观前进均未检测到成功，任务可能出问题，请检查。"
+
+def _is_similar_coord(coord1: list, coord2: list, threshold: int = REPEAT_COORD_THRESHOLD) -> bool:
+    """判断两个坐标是否相近"""
+    if not coord1 or not coord2:
+        return False
+    return abs(coord1[0] - coord2[0]) < threshold and abs(coord1[1] - coord2[1]) < threshold
+
+def _check_repeat_coords(recent_coords: list, new_coord: list) -> int:
+    """检查新坐标是否与最近的坐标重复，返回重复次数"""
+    if not new_coord or not recent_coords:
+        return 0
+    count = 0
+    for coord in reversed(recent_coords):
+        if _is_similar_coord(coord, new_coord):
+            count += 1
+        else:
+            break
+    return count
+
+def _downsample_gray_pixels(image_b64: str, size: int = SCREEN_DIFF_SIZE) -> list[int]:
+    image_bytes = base64.b64decode(image_b64)
+    img = Image.open(BytesIO(image_bytes)).convert("L").resize((size, size))
+    return list(img.getdata())
+
+def _mean_abs_diff(pixels_a: list[int], pixels_b: list[int]) -> float:
+    if not pixels_a or not pixels_b or len(pixels_a) != len(pixels_b):
+        return 1.0
+    total = sum(abs(a - b) for a, b in zip(pixels_a, pixels_b))
+    return total / (len(pixels_a) * 255)
+
+def _screen_change_score(prev_b64: str, curr_b64: str) -> float:
+    try:
+        prev_pixels = _downsample_gray_pixels(prev_b64)
+        curr_pixels = _downsample_gray_pixels(curr_b64)
+        return _mean_abs_diff(prev_pixels, curr_pixels)
+    except Exception as e:
+        print(f"[WARN] Screen diff failed: {e}")
+        return 1.0
+
+def _matches_success(screen_info: str, success_groups: list[list[str]]) -> bool:
+    if not screen_info or not success_groups:
+        return False
+    screen_lower = screen_info.lower()
+    for group in success_groups:
+        if not any(alt.lower() in screen_lower for alt in group if alt):
+            return False
+    return True
+
+def _advance_plan_if_ready(
+    *,
+    parsed_screen: dict,
+    messages: list,
+    output_callback: Callable[[BetaContentBlock], None],
+    plan_steps: list[dict] | None,
+    plan_state: dict | None,
+    plan_update_callback: Callable[[dict], None] | None,
+):
+    if not plan_steps or not plan_state:
+        return
+    screen_info = parsed_screen.get("screen_info", "")
+    current_index = plan_state.get("current_index", 0)
+    progressed = False
+
+    while current_index < len(plan_steps):
+        step = plan_steps[current_index]
+        success_groups = step.get("success_groups") or []
+        if not success_groups:
+            break
+        if not _matches_success(screen_info, success_groups):
+            break
+        step_num = step.get("step", current_index + 1)
+        success_text = step.get("success", "")
+        progress_msg = f"✅ Step {step_num} 已完成，成功条件已匹配：{success_text}"
+        messages.append({"role": "assistant", "content": progress_msg})
+        output_callback(progress_msg)
+        current_index += 1
+        progressed = True
+
+    if progressed:
+        plan_state["current_index"] = current_index
+        if plan_update_callback:
+            plan_update_callback(plan_state)
+        if current_index < len(plan_steps):
+            next_step = plan_steps[current_index]
+            next_msg = (
+                f"➡️ 下一步: Step {next_step.get('step', current_index + 1)} - "
+                f"{next_step.get('action', '')} | Success: {next_step.get('success', '')}"
+            )
+            messages.append({"role": "assistant", "content": next_msg})
+            output_callback(next_msg)
+        else:
+            done_msg = "✅ 所有计划步骤已完成。若目标已达成，请输出 Next Action: None 结束任务。"
+            messages.append({"role": "assistant", "content": done_msg})
+            output_callback(done_msg)
+            if plan_update_callback:
+                plan_update_callback(plan_state)
 
 class APIProvider(StrEnum):
     ANTHROPIC = "anthropic"
@@ -68,11 +192,20 @@ def sampling_loop_sync(
     save_folder: str = "./uploads",
     proxy_base_url: str = None,
     proxy_model: str = None,
+    max_steps: int | None = None,
+    max_seconds: int | None = None,
+    plan_steps: list[dict] | None = None,
+    plan_state: dict | None = None,
+    plan_update_callback: Callable[[dict], None] | None = None,
 ):
     """
     Synchronous agentic sampling loop for the assistant/tool interaction of computer use.
     """
-    print('in sampling_loop_sync, model:', model)
+    # Keep console output minimal; detailed progress is shown in UI.
+    prev_screen_b64 = None
+    no_change_count = 0
+    step_count = 0
+    start_time = time.time()
     omniparser_client = OmniParserClient(url=f"http://{omniparser_url}/parse/")
     if model == "claude-3-5-sonnet-20241022":
         # Register Actor and Executor
@@ -108,35 +241,11 @@ def sampling_loop_sync(
             save_folder=save_folder
         )
     elif model == "omniparser-only":
-        print("[INFO] OmniParser-only mode: 仅解析截图，不调用 LLM")
         parsed_screen = omniparser_client()
 
         screen_width = parsed_screen['width']
         screen_height = parsed_screen['height']
         elements = parsed_screen['parsed_content_list']
-
-        print("=" * 60)
-        print("[PARSED ELEMENTS] 解析到的 UI 元素:")
-        print(f"屏幕尺寸: {screen_width} x {screen_height}")
-        print(f"元素数量: {len(elements)}")
-        print("-" * 60)
-
-        for elem in elements[:20]:
-            idx = elem.get('idx', elem.get('id', '?'))
-            elem_type = elem.get('type', 'unknown')
-            content = elem.get('content', '')[:50]
-            bbox = elem.get('bbox', [])
-
-            if bbox:
-                center_x = int((bbox[0] + bbox[2]) / 2 * screen_width)
-                center_y = int((bbox[1] + bbox[3]) / 2 * screen_height)
-                print(f"  ID:{idx} | {elem_type} | '{content}' | 坐标:({center_x}, {center_y})")
-            else:
-                print(f"  ID:{idx} | {elem_type} | '{content}' | 无坐标")
-
-        if len(elements) > 20:
-            print(f"  ... 还有 {len(elements) - 20} 个元素")
-        print("=" * 60)
 
         result_text = f"""
 ## 截图解析完成
@@ -164,15 +273,37 @@ def sampling_loop_sync(
         output_callback=output_callback,
         tool_output_callback=tool_output_callback,
     )
-    print(f"Model Inited: {model}, Provider: {provider}")
-
     tool_result_content = None
-
-    print(f"Start the message loop. User messages: {messages}")
 
     if model == "claude-3-5-sonnet-20241022": # Anthropic loop
         while True:
+            if max_steps is not None and step_count >= max_steps:
+                output_callback(f"⚠️ 已达到最大步数 {max_steps}，任务停止。")
+                return messages
+            if max_seconds is not None and time.time() - start_time >= max_seconds:
+                output_callback(f"⚠️ 已达到最大运行时间 {max_seconds} 秒，任务停止。")
+                return messages
+            step_count += 1
             parsed_screen = omniparser_client() # parsed_screen: {"som_image_base64": dino_labled_img, "parsed_content_list": parsed_content_list, "screen_info"}
+            current_b64 = parsed_screen.get("original_screenshot_base64")
+            if prev_screen_b64 and current_b64:
+                diff_score = _screen_change_score(prev_screen_b64, current_b64)
+                if diff_score < SCREEN_DIFF_THRESHOLD:
+                    no_change_count += 1
+                else:
+                    no_change_count = 0
+                if no_change_count >= NO_CHANGE_LIMIT:
+                    messages.append({"role": "user", "content": NO_CHANGE_HINT})
+                    no_change_count = 0
+            prev_screen_b64 = current_b64
+            _advance_plan_if_ready(
+                parsed_screen=parsed_screen,
+                messages=messages,
+                output_callback=output_callback,
+                plan_steps=plan_steps,
+                plan_state=plan_state,
+                plan_update_callback=plan_update_callback,
+            )
             screen_info_block = TextBlock(text='Below is the structured accessibility information of the current UI screen, which includes text and icons you can operate on, take these information into account when you are making the prediction for the next action. Note you will still need to take screenshot to get the image: \n' + parsed_screen['screen_info'], type='text')
             screen_info_dict = {"role": "user", "content": [screen_info_block]}
             messages.append(screen_info_dict)
@@ -187,11 +318,41 @@ def sampling_loop_sync(
             messages.append({"content": tool_result_content, "role": "user"})
     
     elif model in set(["omniparser + gpt-4o", "omniparser + o1", "omniparser + o3-mini", "omniparser + R1", "omniparser + qwen2.5vl", "omniparser + glm-4.5v", "omniparser + glm-4v-plus", "omniparser + glm-4v-flash", "omniparser + glm-4.6", "omniparser + gpt-4o-orchestrated", "omniparser + o1-orchestrated", "omniparser + o3-mini-orchestrated", "omniparser + R1-orchestrated", "omniparser + qwen2.5vl-orchestrated", "omniparser + proxy"]):
+        recent_coords = []
+
         while True:
-            print("[DEBUG] Calling omniparser_client()...")
+            if max_steps is not None and step_count >= max_steps:
+                output_callback(f"⚠️ 已达到最大步数 {max_steps}，任务停止。")
+                return messages
+            if max_seconds is not None and time.time() - start_time >= max_seconds:
+                output_callback(f"⚠️ 已达到最大运行时间 {max_seconds} 秒，任务停止。")
+                return messages
+            step_count += 1
             parsed_screen = omniparser_client()
-            print(f"[DEBUG] Got parsed_screen, calling actor...")
+            current_b64 = parsed_screen.get("original_screenshot_base64")
+            if prev_screen_b64 and current_b64:
+                diff_score = _screen_change_score(prev_screen_b64, current_b64)
+                if diff_score < SCREEN_DIFF_THRESHOLD:
+                    no_change_count += 1
+                else:
+                    no_change_count = 0
+                if no_change_count >= NO_CHANGE_LIMIT:
+                    messages.append({"role": "user", "content": NO_CHANGE_HINT})
+                    no_change_count = 0
+            prev_screen_b64 = current_b64
+
             tools_use_needed, vlm_response_json = actor(messages=messages, parsed_screen=parsed_screen)
+
+            new_coord = vlm_response_json.get("box_centroid_coordinate") if vlm_response_json else None
+            if new_coord:
+                repeat_count = _check_repeat_coords(recent_coords, new_coord)
+                if repeat_count >= REPEAT_COORD_LIMIT - 1:
+                    hint = REPEAT_COORD_HINT.format(count=repeat_count + 1, coord=new_coord)
+                    output_callback(hint)
+                    messages.append({"role": "user", "content": hint})
+                recent_coords.append(new_coord)
+                if len(recent_coords) > 10:
+                    recent_coords.pop(0)
 
             for message, tool_result_content in executor(tools_use_needed, messages):
                 yield message

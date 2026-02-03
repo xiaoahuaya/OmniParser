@@ -3,6 +3,7 @@ Agentic sampling loop that calls the Anthropic API and local implenmentation of 
 """
 import asyncio
 import platform
+import os
 from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
@@ -32,6 +33,11 @@ import gradio as gr
 from typing import Dict
 
 BETA_FLAG = "computer-use-2024-10-22"
+DEBUG_LOGS = os.getenv("OMNITOOL_DEBUG", "").lower() in ("1", "true", "yes")
+
+def _debug_print(*args, **kwargs):
+    if DEBUG_LOGS:
+        print(*args, **kwargs)
 
 class APIProvider(StrEnum):
     ANTHROPIC = "anthropic"
@@ -102,13 +108,15 @@ class AnthropicActor:
         self.api_response_callback(cast(APIResponse[BetaMessage], raw_response))
 
         response = raw_response.parse()
-        print(f"AnthropicActor response: {response}")
+        _debug_print(f"AnthropicActor response: {response}")
 
         self.total_token_usage += response.usage.input_tokens + response.usage.output_tokens
         self.total_cost += (response.usage.input_tokens * 3 / 1000000 + response.usage.output_tokens * 15 / 1000000)
         
         if self.print_usage:
-            print(f"Claude total token usage so far: {self.total_token_usage}, total cost so far: $USD{self.total_cost}")
+            _debug_print(
+                f"Claude total token usage so far: {self.total_token_usage}, total cost so far: $USD{self.total_cost}"
+            )
         
         return response
 

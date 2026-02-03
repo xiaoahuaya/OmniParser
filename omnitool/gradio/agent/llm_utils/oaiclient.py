@@ -1,8 +1,15 @@
 import os
 import logging
 import base64
+import os
 import requests
 from .utils import is_image_path, encode_image
+
+DEBUG_LOGS = os.getenv("OMNITOOL_DEBUG", "").lower() in ("1", "true", "yes")
+
+def _debug_print(*args, **kwargs):
+    if DEBUG_LOGS:
+        print(*args, **kwargs)
 
 def run_oai_interleaved(messages: list, system: str, model_name: str, api_key: str, max_tokens=256, temperature=0, provider_base_url: str = "https://api.openai.com/v1"):    
     headers = {"Content-Type": "application/json",
@@ -58,5 +65,7 @@ def run_oai_interleaved(messages: list, system: str, model_name: str, api_key: s
         token_usage = int(response.json()['usage']['total_tokens'])
         return text, token_usage
     except Exception as e:
-        print(f"Error in interleaved openAI: {e}. This may due to your invalid API key. Please check the response: {response.json()} ")
+        _debug_print(
+            f"Error in interleaved openAI: {e}. This may due to your invalid API key. Please check the response: {response.json()} "
+        )
         return response.json()

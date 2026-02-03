@@ -34,27 +34,17 @@ class AnthropicExecutor:
         }
         if new_message not in messages:
             messages.append(new_message)
-        else:
-            print("new_message already in messages, there are duplicates.")
         
         tool_result_content: list[BetaToolResultBlockParam] = []
         for content_block in cast(list[BetaContentBlock], response.content):
             self.output_callback(content_block, sender="bot")
             if content_block.type == "tool_use":
                 tool_input = cast(dict[str, Any], content_block.input)
-                print("=" * 50)
-                print(f"[EXECUTOR] 准备执行 Tool: {content_block.name}")
-                print(f"[EXECUTOR] Tool Input: {tool_input}")
 
                 result = asyncio.run(self.tool_collection.run(
                     name=content_block.name,
                     tool_input=tool_input,
                 ))
-
-                print(f"[EXECUTOR] 执行完成, 结果: {result.output if result.output else 'OK'}")
-                if result.error:
-                    print(f"[EXECUTOR] 错误: {result.error}")
-                print("=" * 50)
 
                 self.output_callback(result, sender="bot")
 
@@ -92,9 +82,8 @@ def _message_display_callback(messages):
             elif isinstance(msg["content"][0], Dict) and msg["content"][0]["content"][-1]["type"] == "image":
                 display_messages.append((None, f'<img src="data:image/png;base64,{msg["content"][0]["content"][-1]["source"]["data"]}">'))  # Bot message
             else:
-                print(msg["content"][0])
-        except Exception as e:
-            print("error", e)
+                pass
+        except Exception:
             pass
     return display_messages
 

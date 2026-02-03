@@ -2,6 +2,12 @@ from groq import Groq
 import os
 from .utils import is_image_path
 
+DEBUG_LOGS = os.getenv("OMNITOOL_DEBUG", "").lower() in ("1", "true", "yes")
+
+def _debug_print(*args, **kwargs):
+    if DEBUG_LOGS:
+        print(*args, **kwargs)
+
 def run_groq_interleaved(messages: list, system: str, model_name: str, api_key: str, max_tokens=256, temperature=0.6):
     """
     Run a chat completion through Groq's API, ignoring any images in the messages.
@@ -54,6 +60,6 @@ def run_groq_interleaved(messages: list, system: str, model_name: str, api_key: 
         
         return final_answer, token_usage
     except Exception as e:
-        print(f"Error in interleaved Groq: {e}")
+        _debug_print(f"Error in interleaved Groq: {e}")
 
         return str(e), 0

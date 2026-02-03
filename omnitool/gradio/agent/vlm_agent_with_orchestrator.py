@@ -1,4 +1,5 @@
 import json
+import os
 from collections.abc import Callable
 from typing import cast, Callable
 import uuid
@@ -19,6 +20,21 @@ import time
 import re
 import os
 OUTPUT_DIR = "./tmp/outputs"
+LLM_ERROR_PATTERNS = (
+    "请求失败",
+    "connection aborted",
+    "connection reset",
+    "timed out",
+    "timeout",
+    "error",
+    "错误",
+    "失败",
+)
+DEBUG_LOGS = os.getenv("OMNITOOL_DEBUG", "").lower() in ("1", "true", "yes")
+
+def _debug_print(*args, **kwargs):
+    if DEBUG_LOGS:
+        print(*args, **kwargs)
 ORCHESTRATOR_LEDGER_PROMPT = """
 Recall we are working on the following request:
 
@@ -104,6 +120,14 @@ class VLMOrchestratedAgent:
         self.plan, self.ledger = None, None
 
         self.system = ''
+        self.retry_limit = int(os.getenv("OMNITOOL_LLM_RETRY_LIMIT", "3"))
+        self.retry_backoff = float(os.getenv("OMNITOOL_LLM_RETRY_BACKOFF", "2.0"))
+
+    def _should_retry_response(self, response: object) -> bool:
+        if not isinstance(response, str):
+            return True
+        lower = response.lower()
+        return any(pattern in lower for pattern in LLM_ERROR_PATTERNS)
     
     def __call__(self, messages: list, parsed_screen: list[str, list, dict]):
         if self.step_count == 0:
@@ -151,63 +175,81 @@ class VLMOrchestratedAgent:
             planner_messages[-1]["content"].append(f"{OUTPUT_DIR}/screenshot_{screenshot_uuid}.png")
             planner_messages[-1]["content"].append(f"{OUTPUT_DIR}/screenshot_som_{screenshot_uuid}.png")
 
-        start = time.time()
-        if "gpt" in self.model or "o1" in self.model or "o3-mini" in self.model:
-            vlm_response, token_usage = run_oai_interleaved(
-                messages=planner_messages,
-                system=system,
-                model_name=self.model,
-                api_key=self.api_key,
-                max_tokens=self.max_tokens,
-                provider_base_url="https://api.openai.com/v1",
-                temperature=0,
-            )
-            print(f"oai token usage: {token_usage}")
-            self.total_token_usage += token_usage
-            if 'gpt' in self.model:
-                self.total_cost += (token_usage * 2.5 / 1000000)  # https://openai.com/api/pricing/
-            elif 'o1' in self.model:
-                self.total_cost += (token_usage * 15 / 1000000)  # https://openai.com/api/pricing/
-            elif 'o3-mini' in self.model:
-                self.total_cost += (token_usage * 1.1 / 1000000)  # https://openai.com/api/pricing/
-        elif "r1" in self.model:
-            vlm_response, token_usage = run_groq_interleaved(
-                messages=planner_messages,
-                system=system,
-                model_name=self.model,
-                api_key=self.api_key,
-                max_tokens=self.max_tokens,
-            )
-            print(f"groq token usage: {token_usage}")
-            self.total_token_usage += token_usage
-            self.total_cost += (token_usage * 0.99 / 1000000)
-        elif "qwen" in self.model:
-            vlm_response, token_usage = run_oai_interleaved(
-                messages=planner_messages,
-                system=system,
-                model_name=self.model,
-                api_key=self.api_key,
-                max_tokens=min(2048, self.max_tokens),
-                provider_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-                temperature=0,
-            )
-            print(f"qwen token usage: {token_usage}")
-            self.total_token_usage += token_usage
-            self.total_cost += (token_usage * 2.2 / 1000000)  # https://help.aliyun.com/zh/model-studio/getting-started/models?spm=a2c4g.11186623.0.0.74b04823CGnPv7#fe96cfb1a422a
+        last_error = None
+        vlm_response = None
+        token_usage = 0
+        latency_vlm = 0.0
+        for attempt in range(self.retry_limit):
+            start = time.time()
+            try:
+                if "gpt" in self.model or "o1" in self.model or "o3-mini" in self.model:
+                    vlm_response, token_usage = run_oai_interleaved(
+                        messages=planner_messages,
+                        system=system,
+                        model_name=self.model,
+                        api_key=self.api_key,
+                        max_tokens=self.max_tokens,
+                        provider_base_url="https://api.openai.com/v1",
+                        temperature=0,
+                    )
+                    self.total_token_usage += token_usage
+                    if 'gpt' in self.model:
+                        self.total_cost += (token_usage * 2.5 / 1000000)  # https://openai.com/api/pricing/
+                    elif 'o1' in self.model:
+                        self.total_cost += (token_usage * 15 / 1000000)  # https://openai.com/api/pricing/
+                    elif 'o3-mini' in self.model:
+                        self.total_cost += (token_usage * 1.1 / 1000000)  # https://openai.com/api/pricing/
+                elif "r1" in self.model:
+                    vlm_response, token_usage = run_groq_interleaved(
+                        messages=planner_messages,
+                        system=system,
+                        model_name=self.model,
+                        api_key=self.api_key,
+                        max_tokens=self.max_tokens,
+                    )
+                    self.total_token_usage += token_usage
+                    self.total_cost += (token_usage * 0.99 / 1000000)
+                elif "qwen" in self.model:
+                    vlm_response, token_usage = run_oai_interleaved(
+                        messages=planner_messages,
+                        system=system,
+                        model_name=self.model,
+                        api_key=self.api_key,
+                        max_tokens=min(2048, self.max_tokens),
+                        provider_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+                        temperature=0,
+                    )
+                    self.total_token_usage += token_usage
+                    self.total_cost += (token_usage * 2.2 / 1000000)  # https://help.aliyun.com/zh/model-studio/getting-started/models?spm=a2c4g.11186623.0.0.74b04823CGnPv7#fe96cfb1a422a
+                else:
+                    raise ValueError(f"Model {self.model} not supported")
+            except Exception as e:
+                last_error = str(e)
+                time.sleep(self.retry_backoff * (attempt + 1))
+                continue
+
+            latency_vlm = time.time() - start
+            if self._should_retry_response(vlm_response):
+                last_error = str(vlm_response)[:200]
+                time.sleep(self.retry_backoff * (attempt + 1))
+                continue
+
+            vlm_response_json = extract_data(vlm_response, "json")
+            try:
+                vlm_response_json = json.loads(vlm_response_json)
+                break
+            except json.JSONDecodeError as e:
+                last_error = f"JSON parse failed: {e}"
+                time.sleep(self.retry_backoff * (attempt + 1))
+                continue
         else:
-            raise ValueError(f"Model {self.model} not supported")
-        latency_vlm = time.time() - start
+            raise RuntimeError(f"LLM request failed after {self.retry_limit} attempts: {last_error}")
+
         
         # Update step counter with both latencies
         self.output_callback(f'<i>Step {self.step_count} | OmniParser: {latency_omniparser:.2f}s | LLM: {latency_vlm:.2f}s</i>', )
 
-        print(f"{vlm_response}")
-        
-        if self.print_usage:
-            print(f"Total token so far: {self.total_token_usage}. Total cost so far: $USD{self.total_cost:.5f}")
-        
-        vlm_response_json = extract_data(vlm_response, "json")
-        vlm_response_json = json.loads(vlm_response_json)
+        # Keep console output minimal; detailed responses are shown in UI.
 
         img_to_show_base64 = parsed_screen["som_image_base64"]
         if "Box ID" in vlm_response_json:
@@ -227,8 +269,28 @@ class VLMOrchestratedAgent:
                 img_to_show.save(buffered, format="PNG")
                 img_to_show_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
             except:
-                print(f"Error parsing: {vlm_response_json}")
+                _debug_print(f"Error parsing: {vlm_response_json}")
                 pass
+        drag_from_id = vlm_response_json.get("From Box ID")
+        drag_to_id = vlm_response_json.get("To Box ID")
+        drag_start_coordinate = None
+        drag_end_coordinate = None
+        if drag_from_id is not None and drag_to_id is not None:
+            try:
+                from_bbox = parsed_screen["parsed_content_list"][int(drag_from_id)]["bbox"]
+                to_bbox = parsed_screen["parsed_content_list"][int(drag_to_id)]["bbox"]
+                drag_start_coordinate = [
+                    int((from_bbox[0] + from_bbox[2]) / 2 * screen_width),
+                    int((from_bbox[1] + from_bbox[3]) / 2 * screen_height),
+                ]
+                drag_end_coordinate = [
+                    int((to_bbox[0] + to_bbox[2]) / 2 * screen_width),
+                    int((to_bbox[1] + to_bbox[3]) / 2 * screen_height),
+                ]
+                vlm_response_json["drag_start_coordinate"] = drag_start_coordinate
+                vlm_response_json["drag_end_coordinate"] = drag_end_coordinate
+            except Exception as e:
+                _debug_print(f"[WARN] Failed to parse drag coordinates: {e}")
         self.output_callback(f'<img src="data:image/png;base64,{img_to_show_base64}">', )
         
         # Display screen info in a collapsible dropdown
@@ -250,19 +312,35 @@ class VLMOrchestratedAgent:
 
         # construct the response so that anthropicExcutor can execute the tool
         response_content = [BetaTextBlock(text=vlm_plan_str, type='text')]
-        if 'box_centroid_coordinate' in vlm_response_json:
+        if 'box_centroid_coordinate' in vlm_response_json and vlm_response_json.get("Next Action") in (
+            "left_click", "right_click", "double_click", "type", "type_submit", "hover"
+        ):
             move_cursor_block = BetaToolUseBlock(id=f'toolu_{uuid.uuid4()}',
                                             input={'action': 'mouse_move', 'coordinate': vlm_response_json["box_centroid_coordinate"]},
                                             name='computer', type='tool_use')
             response_content.append(move_cursor_block)
 
         if vlm_response_json["Next Action"] == "None":
-            print("Task paused/completed.")
-        elif vlm_response_json["Next Action"] == "type":
+            # Task paused/completed.
+            pass
+        elif vlm_response_json["Next Action"] in ("type", "type_submit"):
             sim_content_block = BetaToolUseBlock(id=f'toolu_{uuid.uuid4()}',
                                         input={'action': vlm_response_json["Next Action"], 'text': vlm_response_json["value"]},
                                         name='computer', type='tool_use')
             response_content.append(sim_content_block)
+        elif vlm_response_json["Next Action"] == "drag":
+            if drag_start_coordinate and drag_end_coordinate:
+                sim_content_block = BetaToolUseBlock(
+                    id=f'toolu_{uuid.uuid4()}',
+                    input={
+                        'action': "drag",
+                        'start_coordinate': drag_start_coordinate,
+                        'end_coordinate': drag_end_coordinate,
+                    },
+                    name='computer',
+                    type='tool_use'
+                )
+                response_content.append(sim_content_block)
         elif vlm_response_json["Next Action"] == "key":
             sim_content_block = BetaToolUseBlock(id=f'toolu_{uuid.uuid4()}',
                                         input={'action': vlm_response_json["Next Action"], 'text': vlm_response_json["value"]},
@@ -306,17 +384,19 @@ You should carefully consider your plan base on the task, screenshot, and histor
 Here is the list of all detected bounding boxes by IDs on the screen and their description:{screen_info}
 
 Your available "Next Action" only include:
-- type: types a string of text.
+- type: types a string of text without pressing Enter.
+- type_submit: types text and presses Enter to submit.
 - key: presses keyboard shortcuts (e.g., "ctrl+a" for select all, "ctrl+c" for copy, "ctrl+v" for paste).
 - left_click: move mouse to box id and left clicks.
 - right_click: move mouse to box id and right clicks.
 - double_click: move mouse to box id and double clicks.
+- drag: drag from one element to another using From Box ID and To Box ID.
 - hover: move mouse to box id.
 - scroll_up: scrolls the screen up to view previous content.
 - scroll_down: scrolls the screen down, when the desired button is not visible, or you need to see more content.
 - wait: waits for 1 second for the device to load or respond.
 
-Based on the visual information from the screenshot image and the detected bounding boxes, please determine the next action, the Box ID you should operate on (if action is one of 'type', 'hover', 'scroll_up', 'scroll_down', 'wait', there should be no Box ID field), and the value (if the action is 'type') in order to complete the task.
+Based on the visual information from the screenshot image and the detected bounding boxes, please determine the next action, the Box ID you should operate on (required for click/hover/type/type_submit; omit for key/scroll_up/scroll_down/wait), or From Box ID + To Box ID (required for drag), and the value (if the action is 'type' or 'type_submit') in order to complete the task.
 
 Output format:
 ```json
@@ -324,7 +404,9 @@ Output format:
     "Reasoning": str, # describe what is in the current screen, taking into account the history, then describe your step-by-step thoughts on how to achieve the task, choose one action from available actions at a time.
     "Next Action": "action_type, action description" | "None" # one action at a time, describe it in short and precisely. 
     "Box ID": n,
-    "value": "xxx" # only provide value field if the action is type, else don't include value key
+    "From Box ID": m, # only provide for drag
+    "To Box ID": k, # only provide for drag
+    "value": "xxx" # only provide value field if the action is type or type_submit, else don't include value key
 }}
 ```
 
@@ -406,9 +488,8 @@ IMPORTANT NOTES:
         try:
             with open(plan_path, "w") as f:
                 f.write(plan)
-            print(f"Plan successfully saved to {plan_path}")
         except Exception as e:
-            print(f"Error saving plan to {plan_path}: {str(e)}")
+            _debug_print(f"Error saving plan to {plan_path}: {str(e)}")
         
         return plan
 

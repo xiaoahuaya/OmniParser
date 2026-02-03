@@ -2,10 +2,17 @@
 统一的 LLM 中转 API 客户端
 支持 OpenAI 兼容格式的中转 API（包括 Claude 中转）
 """
+import os
 import requests
 import base64
 from typing import Optional, Tuple, List, Dict, Any
 from .utils import is_image_path, encode_image
+
+DEBUG_LOGS = os.getenv("OMNITOOL_DEBUG", "").lower() in ("1", "true", "yes")
+
+def _debug_print(*args, **kwargs):
+    if DEBUG_LOGS:
+        print(*args, **kwargs)
 
 
 def run_proxy_interleaved(
@@ -88,22 +95,23 @@ def run_proxy_interleaved(
 
     endpoint = f"{base_url.rstrip('/')}/chat/completions"
 
-    print("=" * 60)
-    print("[PROXY REQUEST]")
-    print(f"Endpoint: {endpoint}")
-    print(f"Model: {model_name}")
-    print(f"System: {system[:200]}..." if len(system) > 200 else f"System: {system}")
-    print(f"Messages count: {len(final_messages)}")
-    for i, msg in enumerate(final_messages):
-        role = msg.get('role', 'unknown')
-        content = msg.get('content', '')
-        if isinstance(content, list):
-            text_parts = [c.get('text', '')[:100] for c in content if c.get('type') == 'text']
-            img_count = sum(1 for c in content if c.get('type') == 'image_url')
-            print(f"  [{i}] {role}: {text_parts} + {img_count} images")
-        else:
-            print(f"  [{i}] {role}: {str(content)[:100]}...")
-    print("=" * 60)
+    _debug_print("=" * 60)
+    _debug_print("[PROXY REQUEST]")
+    _debug_print(f"Endpoint: {endpoint}")
+    _debug_print(f"Model: {model_name}")
+    _debug_print(f"System: {system[:200]}..." if len(system) > 200 else f"System: {system}")
+    _debug_print(f"Messages count: {len(final_messages)}")
+    if DEBUG_LOGS:
+        for i, msg in enumerate(final_messages):
+            role = msg.get('role', 'unknown')
+            content = msg.get('content', '')
+            if isinstance(content, list):
+                text_parts = [c.get('text', '')[:100] for c in content if c.get('type') == 'text']
+                img_count = sum(1 for c in content if c.get('type') == 'image_url')
+                _debug_print(f"  [{i}] {role}: {text_parts} + {img_count} images")
+            else:
+                _debug_print(f"  [{i}] {role}: {str(content)[:100]}...")
+    _debug_print("=" * 60)
 
     try:
         response = requests.post(endpoint, headers=headers, json=payload, timeout=120)
@@ -113,27 +121,27 @@ def run_proxy_interleaved(
         text = result['choices'][0]['message']['content']
         token_usage = int(result.get('usage', {}).get('total_tokens', 0))
 
-        print("[PROXY RESPONSE]")
-        print(f"Status: {response.status_code}")
-        print(f"Tokens: {token_usage}")
-        print(f"Response: {text}")
-        print("=" * 60)
+        _debug_print("[PROXY RESPONSE]")
+        _debug_print(f"Status: {response.status_code}")
+        _debug_print(f"Tokens: {token_usage}")
+        _debug_print(f"Response: {text}")
+        _debug_print("=" * 60)
 
         return text, token_usage
 
     except requests.exceptions.RequestException as e:
         error_msg = f"中转 API 请求失败: {e}"
-        print(error_msg)
-        if hasattr(e, 'response') and e.response is not None:
+        _debug_print(error_msg)
+        if DEBUG_LOGS and hasattr(e, 'response') and e.response is not None:
             try:
                 error_detail = e.response.json()
-                print(f"错误详情: {error_detail}")
-            except:
-                print(f"响应内容: {e.response.text}")
+                _debug_print(f"错误详情: {error_detail}")
+            except Exception:
+                _debug_print(f"响应内容: {e.response.text}")
         return error_msg, 0
     except (KeyError, IndexError) as e:
         error_msg = f"解析响应失败: {e}"
-        print(error_msg)
+        _debug_print(error_msg)
         return error_msg, 0
 
 
