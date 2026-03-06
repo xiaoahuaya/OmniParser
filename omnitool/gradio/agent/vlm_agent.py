@@ -321,34 +321,17 @@ class VLMAgent:
             )
             response_content.append(move_cursor_block)
 
-            # type 动作前自动点击输入框
-            if next_action == "type":
-                click_block = BetaToolUseBlock(
-                    id=f'toolu_{uuid.uuid4()}',
-                    input={'action': 'left_click'},
-                    name='computer',
-                    type='tool_use'
-                )
-                response_content.append(click_block)
-
         if next_action == "None":
             action_info = f"🏁 **任务完成/暂停**"
         elif next_action == "type":
             type_value = vlm_response_json.get("value", "")
 
-            # type 动作：输入文本
+            # type 动作：仅输入文本，不自动回车
             sim_content_block = BetaToolUseBlock(id=f'toolu_{uuid.uuid4()}',
                                         input={'action': 'type', 'text': type_value},
                                         name='computer', type='tool_use')
             response_content.append(sim_content_block)
-
-            # 自动追加 key enter 发送
-            enter_block = BetaToolUseBlock(id=f'toolu_{uuid.uuid4()}',
-                                        input={'action': 'key', 'text': 'enter'},
-                                        name='computer', type='tool_use')
-            response_content.append(enter_block)
-
-            action_info = f"⌨️ **输入并发送**: `{type_value}` (Box ID: {box_id})"
+            action_info = f"⌨️ **输入**: `{type_value}` (Box ID: {box_id})"
         elif next_action == "drag":
             if not drag_start_coordinate or not drag_end_coordinate:
                 action_info = "⚠️ **拖拽缺少起止坐标，已暂停**"
@@ -401,11 +384,9 @@ class VLMAgent:
 可用动作：left_click, right_click, double_click, drag, type, key, scroll_up, scroll_down, wait, None
 
 动作说明：
-- type: 输入文字并自动按回车发送（无需额外操作）
+- type: 仅输入文字，不自动回车
 - key: 按快捷键（如 enter, ctrl+a, ctrl+c 等）
 - drag: 从一个元素拖拽到另一个元素（需要 From Box ID 和 To Box ID）
-
-【重要】：type 动作会自动发送，不需要再用 key enter 或点击发送按钮
 
 只输出JSON，格式如下：
 ```json
@@ -467,6 +448,7 @@ class VLMAgent:
 - 正确流程：点击输入框 → 下一步直接 type 输入内容
 - 错误流程：点击输入框 → 再次点击验证 → 再点击...（禁止）
 - 如果输入后文字没有出现在屏幕上，才需要重新点击输入框
+- 如需提交（例如地址栏跳转、表单发送），请显式使用 key enter
 """
         return main_section
 

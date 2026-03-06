@@ -1,5 +1,5 @@
 """
-python app.py --windows_host_url localhost:8006 --omniparser_server_url localhost:8000
+python app.py --windows_host_url localhost:8006 --omniparser_server_url localhost:9000
 """
 
 import os
@@ -40,6 +40,19 @@ from agent.llm_utils.groqclient import run_groq_interleaved
 import requests
 from requests.exceptions import RequestException
 import base64
+
+
+def _ensure_localhost_no_proxy():
+    local_hosts = {"localhost", "127.0.0.1", "::1"}
+    for key in ("NO_PROXY", "no_proxy"):
+        current = os.environ.get(key, "")
+        parts = [p.strip() for p in current.split(",") if p.strip()]
+        merged = set(parts)
+        merged.update(local_hosts)
+        os.environ[key] = ",".join(sorted(merged))
+
+
+_ensure_localhost_no_proxy()
 
 CONFIG_DIR = Path("~/.anthropic").expanduser()
 API_KEY_FILE = CONFIG_DIR / "api_key"
@@ -275,6 +288,78 @@ def _generate_plan(task: str, state: dict) -> str | None:
         return None
     return None
 
+
+def _extract_task_keywords(task: str) -> set[str]:
+    keywords: set[str] = set()
+    lowered = (task or "").lower()
+    for w in re.findall(r"[a-z0-9_]{3,}", lowered):
+        keywords.add(w)
+    for zh in re.findall(r"[\u4e00-\u9fff]{2,}", task or ""):
+        keywords.add(zh)
+    return keywords
+
+
+def _find_matching_flow_docs(task: str, docs_dir: Path = Path("docs")) -> list[Path]:
+    if not docs_dir.exists():
+        return []
+    keywords = _extract_task_keywords(task)
+    if not keywords:
+        return []
+
+    scored: list[tuple[int, Path]] = []
+    for p in docs_dir.glob("*.md"):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        filename = p.name.lower()
+        body = text.lower()
+        score = 0
+        for k in keywords:
+            kl = k.lower()
+            if kl in filename:
+                score += 3
+            if kl in body:
+                score += 1
+        if score > 0:
+            scored.append((score, p))
+
+    scored.sort(key=lambda x: (-x[0], len(x[1].name)))
+    return [p for _, p in scored[:3]]
+
+
+def _build_flow_reference_message(task: str) -> tuple[str | None, list[str]]:
+    matched = _find_matching_flow_docs(task)
+    guideline = Path("docs/flow_reference_guidelines.md")
+    if guideline.exists() and guideline not in matched:
+        matched = [guideline] + matched
+    if not matched:
+        return None, []
+
+    snippets: list[str] = []
+    used_paths: list[str] = []
+    for p in matched:
+        try:
+            raw = p.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        normalized = re.sub(r"\s+", " ", raw).strip()
+        if not normalized:
+            continue
+        used_paths.append(str(p))
+        snippets.append(f"[{p}] {normalized[:1000]}")
+
+    if not snippets:
+        return None, []
+
+    guidance = (
+        "默认第1步：先检查并预读流程文档，再执行UI动作。"
+        "以下为本任务命中文档摘要，请优先遵循：\n"
+        + "\n".join(snippets)
+        + "\n若文档与页面不一致，先执行文档中的恢复/校验步骤，再继续下一步。"
+    )
+    return guidance, used_paths
+
 def _save_task_state():
     TASK_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     data = {
@@ -381,7 +466,7 @@ def parse_arguments():
 
     parser = argparse.ArgumentParser(description="Gradio App")
     parser.add_argument("--windows_host_url", type=str, default='localhost:8006')
-    parser.add_argument("--omniparser_server_url", type=str, default="localhost:8000")
+    parser.add_argument("--omniparser_server_url", type=str, default="localhost:9000")
     parser.add_argument("--local", action="store_true", help="本地模式，直接控制本机桌面")
     parser.add_argument("--max_steps", type=int, default=int(os.getenv("OMNITOOL_MAX_STEPS", "80")))
     parser.add_argument("--max_seconds", type=int, default=int(os.getenv("OMNITOOL_MAX_SECONDS", "900")))
@@ -699,6 +784,7 @@ def _run_task():
             only_n_most_recent_images=only_n_images,
             max_tokens=16384,
             omniparser_url=args.omniparser_server_url,
+            windows_host_url=args.windows_host_url,
             proxy_base_url=proxy_base_url,
             proxy_model=proxy_model,
             max_steps=max_steps,
@@ -800,6 +886,7 @@ def process_input(user_input, state):
         only_n_most_recent_images=state["only_n_most_recent_images"],
         max_tokens=16384,
         omniparser_url=args.omniparser_server_url,
+        windows_host_url=args.windows_host_url,
         proxy_base_url=proxy_base_url,
         proxy_model=proxy_model,
         max_steps=state.get("max_steps"),
@@ -841,6 +928,20 @@ def start_background_task(user_input, state):
                 "content": [TextBlock(type="text", text=user_input)],
             }
         )
+        flow_msg, flow_docs = _build_flow_reference_message(user_input)
+        if flow_msg:
+            TASK_STATE["messages"].append(
+                {
+                    "role": Sender.USER,
+                    "content": [TextBlock(type="text", text=flow_msg)],
+                }
+            )
+            TASK_STATE["chatbot_messages"].append(
+                (
+                    None,
+                    "📚 已执行默认第1步：文档预读\n" + "\n".join(flow_docs),
+                )
+            )
         TASK_STATE["chatbot_messages"].append((user_input, None))
 
         TASK_STATE["plan"] = None
@@ -1071,7 +1172,7 @@ with gr.Blocks(theme=gr.themes.Default()) as demo:
             chatbot = gr.Chatbot(label="Chatbot History", autoscroll=True, height=580, type="tuples", allow_tags=True)
         with gr.Column(scale=3):
             if args.local:
-                local_info = gr.HTML(
+                vm_view = gr.HTML(
                     '''
                     <div style="height: 580px; display: flex; flex-direction: column; align-items: center; justify-content: center; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border-radius: 8px; color: white;">
                         <h2 style="margin-bottom: 20px;">🖥️ 本地控制模式</h2>
@@ -1086,8 +1187,8 @@ with gr.Blocks(theme=gr.themes.Default()) as demo:
                     elem_classes="no-padding"
                 )
             else:
-                iframe = gr.HTML(
-                    f'<iframe src="http://{args.windows_host_url}/vnc.html?view_only=1&autoconnect=1&resize=scale" width="100%" height="580" allow="fullscreen"></iframe>',
+                vm_view = gr.HTML(
+                    value="",
                     container=False,
                     elem_classes="no-padding"
                 )
@@ -1203,6 +1304,32 @@ with gr.Blocks(theme=gr.themes.Default()) as demo:
             _save_task_state()
         return state['chatbot_messages'], _task_status_text()
 
+    def refresh_vm_monitor():
+        if args.local:
+            return gr.update()
+        url = f"http://{args.windows_host_url}/screenshot?t={int(time.time()*1000)}"
+        try:
+            response = requests.get(url, timeout=3, proxies={"http": "", "https": ""})
+            if response.status_code != 200:
+                return (
+                    f'<div style="height:580px;display:flex;align-items:center;justify-content:center;'
+                    f'background:#111;color:#fca5a5;border-radius:8px;">VM monitor HTTP {response.status_code}</div>'
+                )
+            img_b64 = base64.b64encode(response.content).decode("utf-8")
+            return (
+                f'<div style="height:580px;background:#111;border-radius:8px;overflow:hidden;position:relative;">'
+                f'<div style="position:absolute;top:8px;left:10px;z-index:3;color:#fff;font-size:12px;'
+                f'background:rgba(0,0,0,.55);padding:4px 8px;border-radius:6px;">'
+                f'Live VM: {args.windows_host_url} | {datetime.now().strftime("%H:%M:%S")}</div>'
+                f'<img src="data:image/png;base64,{img_b64}" '
+                f'style="width:100%;height:100%;object-fit:contain;background:#000;" /></div>'
+            )
+        except Exception as e:
+            return (
+                f'<div style="height:580px;display:flex;align-items:center;justify-content:center;'
+                f'background:#111;color:#fca5a5;border-radius:8px;">VM monitor error: {str(e)}</div>'
+            )
+
     proxy_provider.change(
         fn=update_proxy_provider,
         inputs=[proxy_provider, state],
@@ -1229,6 +1356,11 @@ with gr.Blocks(theme=gr.themes.Default()) as demo:
 
     auto_refresh_timer = gr.Timer(value=1.5)
     auto_refresh_timer.tick(refresh_task, [], [chatbot, status_bar])
+    vm_refresh_timer = gr.Timer(value=1.0)
+    vm_refresh_timer.tick(refresh_vm_monitor, [], [vm_view])
     
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=7888)
+
+
+

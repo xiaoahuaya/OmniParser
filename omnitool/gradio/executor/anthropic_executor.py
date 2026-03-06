@@ -20,7 +20,11 @@ class AnthropicExecutor:
         self, 
         output_callback: Callable[[BetaContentBlockParam], None], 
         tool_output_callback: Callable[[Any, str], None],
+        windows_host_url: str | None = None,
     ):
+        if windows_host_url:
+            import os
+            os.environ["OMNITOOL_WINDOWS_HOST_URL"] = windows_host_url
         self.tool_collection = ToolCollection(
             ComputerTool()
         )

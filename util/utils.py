@@ -39,6 +39,9 @@ from util.box_annotator import BoxAnnotator
 def get_caption_model_processor(model_name, model_name_or_path="Salesforce/blip2-opt-2.7b", device=None):
     if not device:
         device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Force transformers to skip TensorFlow imports to avoid TF/protobuf conflicts.
+    os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+    os.environ.setdefault("USE_TF", "0")
     if model_name == "blip2":
         from transformers import Blip2Processor, Blip2ForConditionalGeneration
         processor = Blip2Processor.from_pretrained("Salesforce/blip2-opt-2.7b")
@@ -539,3 +542,4 @@ def check_ocr_box(image_source: Union[str, Image.Image], display_img = True, out
         elif output_bb_format == 'xyxy':
             bb = [get_xyxy(item) for item in coord]
     return (text, bb), goal_filtering
+

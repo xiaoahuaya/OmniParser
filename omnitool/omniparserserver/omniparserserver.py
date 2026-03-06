@@ -15,13 +15,13 @@ from util.omniparser import Omniparser
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Omniparser API')
-    parser.add_argument('--som_model_path', type=str, default='../../weights/icon_detect/model.pt', help='Path to the som model')
+    parser.add_argument('--som_model_path', type=str, default=os.path.join(root_dir, 'weights', 'icon_detect', 'model.pt'), help='Path to the som model')
     parser.add_argument('--caption_model_name', type=str, default='florence2', help='Name of the caption model')
-    parser.add_argument('--caption_model_path', type=str, default='../../weights/icon_caption_florence', help='Path to the caption model')
+    parser.add_argument('--caption_model_path', type=str, default=os.path.join(root_dir, 'weights', 'icon_caption_florence'), help='Path to the caption model')
     parser.add_argument('--device', type=str, default='cpu', help='Device to run the model')
     parser.add_argument('--BOX_TRESHOLD', type=float, default=0.05, help='Threshold for box detection')
     parser.add_argument('--host', type=str, default='127.0.0.1', help='Host for the API')
-    parser.add_argument('--port', type=int, default=8000, help='Port for the API')
+    parser.add_argument('--port', type=int, default=9000, help='Port for the API')
     args = parser.parse_args()
     return args
 
@@ -56,3 +56,4 @@ async def root():
 
 if __name__ == "__main__":
     uvicorn.run("omniparserserver:app", host=args.host, port=args.port, reload=False)
+

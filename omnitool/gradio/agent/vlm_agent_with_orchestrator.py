@@ -313,7 +313,7 @@ class VLMOrchestratedAgent:
         # construct the response so that anthropicExcutor can execute the tool
         response_content = [BetaTextBlock(text=vlm_plan_str, type='text')]
         if 'box_centroid_coordinate' in vlm_response_json and vlm_response_json.get("Next Action") in (
-            "left_click", "right_click", "double_click", "type", "type_submit", "hover"
+            "left_click", "right_click", "double_click", "type", "hover"
         ):
             move_cursor_block = BetaToolUseBlock(id=f'toolu_{uuid.uuid4()}',
                                             input={'action': 'mouse_move', 'coordinate': vlm_response_json["box_centroid_coordinate"]},
@@ -323,9 +323,9 @@ class VLMOrchestratedAgent:
         if vlm_response_json["Next Action"] == "None":
             # Task paused/completed.
             pass
-        elif vlm_response_json["Next Action"] in ("type", "type_submit"):
+        elif vlm_response_json["Next Action"] == "type":
             sim_content_block = BetaToolUseBlock(id=f'toolu_{uuid.uuid4()}',
-                                        input={'action': vlm_response_json["Next Action"], 'text': vlm_response_json["value"]},
+                                        input={'action': "type", 'text': vlm_response_json["value"]},
                                         name='computer', type='tool_use')
             response_content.append(sim_content_block)
         elif vlm_response_json["Next Action"] == "drag":
@@ -385,7 +385,6 @@ Here is the list of all detected bounding boxes by IDs on the screen and their d
 
 Your available "Next Action" only include:
 - type: types a string of text without pressing Enter.
-- type_submit: types text and presses Enter to submit.
 - key: presses keyboard shortcuts (e.g., "ctrl+a" for select all, "ctrl+c" for copy, "ctrl+v" for paste).
 - left_click: move mouse to box id and left clicks.
 - right_click: move mouse to box id and right clicks.
@@ -396,7 +395,7 @@ Your available "Next Action" only include:
 - scroll_down: scrolls the screen down, when the desired button is not visible, or you need to see more content.
 - wait: waits for 1 second for the device to load or respond.
 
-Based on the visual information from the screenshot image and the detected bounding boxes, please determine the next action, the Box ID you should operate on (required for click/hover/type/type_submit; omit for key/scroll_up/scroll_down/wait), or From Box ID + To Box ID (required for drag), and the value (if the action is 'type' or 'type_submit') in order to complete the task.
+Based on the visual information from the screenshot image and the detected bounding boxes, please determine the next action, the Box ID you should operate on (required for click/hover/type; omit for key/scroll_up/scroll_down/wait), or From Box ID + To Box ID (required for drag), and the value (if the action is 'type') in order to complete the task.
 
 Output format:
 ```json
@@ -406,7 +405,7 @@ Output format:
     "Box ID": n,
     "From Box ID": m, # only provide for drag
     "To Box ID": k, # only provide for drag
-    "value": "xxx" # only provide value field if the action is type or type_submit, else don't include value key
+    "value": "xxx" # only provide value field if the action is type, else don't include value key
 }}
 ```
 
@@ -455,10 +454,11 @@ IMPORTANT NOTES:
         main_section += """
 3. Attach the next action prediction in the "Next Action".
 4. You can use "key" action for keyboard shortcuts like "ctrl+a" (select all), "ctrl+c" (copy), "ctrl+v" (paste), "enter", "backspace", etc.
-5. When the task is completed, don't complete additional actions. You should say "Next Action": "None" in the json field.
-6. The tasks involve buying multiple products or navigating through multiple pages. You should break it into subgoals and complete each subgoal one by one in the order of the instructions.
-7. avoid choosing the same action/elements multiple times in a row, if it happens, reflect to yourself, what may have gone wrong, and predict a different action.
-8. If you are prompted with login information page or captcha page, or you think it need user's permission to do the next action, you should say "Next Action": "None" in the json field.
+5. If submission is needed, use "key" with value "enter" explicitly after type.
+6. When the task is completed, don't complete additional actions. You should say "Next Action": "None" in the json field.
+7. The tasks involve buying multiple products or navigating through multiple pages. You should break it into subgoals and complete each subgoal one by one in the order of the instructions.
+8. avoid choosing the same action/elements multiple times in a row, if it happens, reflect to yourself, what may have gone wrong, and predict a different action.
+9. If you are prompted with login information page or captcha page, or you think it need user's permission to do the next action, you should say "Next Action": "None" in the json field.
 """ 
 
         return main_section

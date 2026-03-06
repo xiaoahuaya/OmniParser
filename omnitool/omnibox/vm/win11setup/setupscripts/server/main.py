@@ -3,12 +3,15 @@ import logging
 import argparse
 import shlex
 import subprocess
+import contextlib
+import io as pyio
 from flask import Flask, request, jsonify, send_file
 import threading
 import traceback
 import pyautogui
 from PIL import Image
 from io import BytesIO
+import mss
 
 
 def execute_anything(data):
@@ -44,14 +47,53 @@ def execute_anything(data):
     
 
 def execute(data):
-    """Action space aware implementation. Should not use arbitrary code execution."""
-    return jsonify({
-        'status': 'error',
-        'message': 'Not implemented. Please add your implementation to omnitool/omnibox/vm/win11setup/setupscripts/server/main.py.'
-    }), 500
+    """
+    Action-aware implementation.
+    If payload is `python -c "<code>"`, execute inline in this process so pyautogui
+    runs in the same desktop session as the server.
+    """
+    command = data.get("command", [])
+    if (
+        isinstance(command, list)
+        and len(command) >= 3
+        and isinstance(command[0], str)
+        and isinstance(command[1], str)
+        and command[1] == "-c"
+    ):
+        code = command[2]
+        stdout = pyio.StringIO()
+        stderr = pyio.StringIO()
+        scope = {
+            "pyautogui": pyautogui,
+            "subprocess": subprocess,
+            "time": __import__("time"),
+            "os": os,
+        }
+        try:
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                exec(code, scope, scope)
+            return jsonify(
+                {
+                    "status": "success",
+                    "output": stdout.getvalue(),
+                    "error": stderr.getvalue(),
+                    "returncode": 0,
+                }
+            )
+        except Exception:
+            logger.error("\n" + traceback.format_exc() + "\n")
+            return jsonify(
+                {
+                    "status": "success",
+                    "output": stdout.getvalue(),
+                    "error": stderr.getvalue() + traceback.format_exc(),
+                    "returncode": 1,
+                }
+            )
+    return execute_anything(data)
 
 
-execute_impl = execute   # switch to execute_anything to allow any command. Please use with caution only for testing purposes.
+execute_impl = execute
 
 
 parser = argparse.ArgumentParser()
@@ -80,19 +122,18 @@ def execute_command():
 
 @app.route('/screenshot', methods=['GET'])
 def capture_screen_with_cursor():    
-    cursor_path = os.path.join(os.path.dirname(__file__), "cursor.png")
-    screenshot = pyautogui.screenshot()
-    cursor_x, cursor_y = pyautogui.position()
-    cursor = Image.open(cursor_path)
-    # make the cursor smaller
-    cursor = cursor.resize((int(cursor.width / 1.5), int(cursor.height / 1.5)))
-    screenshot.paste(cursor, (cursor_x, cursor_y), cursor)
-
-    # Convert PIL Image to bytes and send
+    # Keep screenshot endpoint robust in varied desktop sessions.
+    try:
+        screenshot = pyautogui.screenshot()
+    except Exception:
+        with mss.mss() as sct:
+            monitor = sct.monitors[1]
+            shot = sct.grab(monitor)
+            screenshot = Image.frombytes("RGB", shot.size, shot.rgb)
     img_io = BytesIO()
-    screenshot.save(img_io, 'PNG')
+    screenshot.save(img_io, "PNG")
     img_io.seek(0)
-    return send_file(img_io, mimetype='image/png')
+    return send_file(img_io, mimetype="image/png")
 
 if __name__ == '__main__':
-    app.run(host="10.0.2.15", port=args.port)
+    app.run(host="0.0.0.0", port=args.port)
