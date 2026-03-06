@@ -299,6 +299,67 @@ def _extract_task_keywords(task: str) -> set[str]:
     return keywords
 
 
+INTENT_FLOW_SOCKETS: dict[str, dict[str, object]] = {
+    "xhs_publish": {
+        "description": "小红书发布/创作流程",
+        "platform_tokens": (
+            "小红书", "xiaohongshu", "xhs", "红书",
+        ),
+        "action_tokens": (
+            "发布", "发笔记", "发帖", "创作", "写长文", "图文", "内容发布",
+            "publish", "post",
+        ),
+        "docs": (
+            "docs/xhs_publish_flow.md",
+            "docs/xhs_longform_flow.md",
+            "docs/flow_reference_guidelines.md",
+            "docs/vm134_quick_flow.md",
+        ),
+    },
+}
+
+
+def _detect_task_intent(task: str) -> str | None:
+    task_text = (task or "").strip().lower()
+    if not task_text:
+        return None
+
+    for intent, cfg in INTENT_FLOW_SOCKETS.items():
+        platform_tokens = cfg.get("platform_tokens", ())
+        action_tokens = cfg.get("action_tokens", ())
+        has_platform = any(str(token).lower() in task_text for token in platform_tokens)
+        has_action = any(str(token).lower() in task_text for token in action_tokens)
+        if has_platform and has_action:
+            return intent
+    return None
+
+
+def _resolve_intent_docs(task_intent: str | None) -> list[Path]:
+    if not task_intent:
+        return []
+    cfg = INTENT_FLOW_SOCKETS.get(task_intent)
+    if not cfg:
+        return []
+    resolved: list[Path] = []
+    for rel in cfg.get("docs", ()):
+        p = Path(str(rel))
+        if p.exists():
+            resolved.append(p)
+    return resolved
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for p in paths:
+        key = str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(p)
+    return unique
+
+
 def _find_matching_flow_docs(task: str, docs_dir: Path = Path("docs")) -> list[Path]:
     if not docs_dir.exists():
         return []
@@ -329,10 +390,13 @@ def _find_matching_flow_docs(task: str, docs_dir: Path = Path("docs")) -> list[P
 
 
 def _build_flow_reference_message(task: str) -> tuple[str | None, list[str]]:
-    matched = _find_matching_flow_docs(task)
+    task_intent = _detect_task_intent(task)
+    intent_docs = _resolve_intent_docs(task_intent)
+    matched = intent_docs + _find_matching_flow_docs(task)
     guideline = Path("docs/flow_reference_guidelines.md")
-    if guideline.exists() and guideline not in matched:
+    if guideline.exists():
         matched = [guideline] + matched
+    matched = _dedupe_paths(matched)
     if not matched:
         return None, []
 
@@ -352,9 +416,16 @@ def _build_flow_reference_message(task: str) -> tuple[str | None, list[str]]:
     if not snippets:
         return None, []
 
+    intent_tip = ""
+    if task_intent:
+        cfg = INTENT_FLOW_SOCKETS.get(task_intent, {})
+        desc = str(cfg.get("description", task_intent))
+        intent_tip = f"识别到任务意图：{desc}（{task_intent}），已优先注入对应流程插座。\n"
+
     guidance = (
-        "默认第1步：先检查并预读流程文档，再执行UI动作。"
-        "以下为本任务命中文档摘要，请优先遵循：\n"
+        "默认第1步：先检查并预读流程文档，再执行UI动作。\n"
+        + intent_tip
+        + "以下为本任务命中文档摘要，请优先遵循：\n"
         + "\n".join(snippets)
         + "\n若文档与页面不一致，先执行文档中的恢复/校验步骤，再继续下一步。"
     )

@@ -429,11 +429,12 @@ def get_som_labeled_img(image_source: Union[str, Image.Image], model=None, BOX_T
 
     # annotate the image with labels
     if ocr_bbox:
-        ocr_bbox = torch.tensor(ocr_bbox) / torch.Tensor([w, h, w, h])
-        ocr_bbox=ocr_bbox.tolist()
+        ocr_bbox = (torch.tensor(ocr_bbox) / torch.Tensor([w, h, w, h])).tolist()
     else:
         print('no ocr bbox!!!')
-        ocr_bbox = None
+        ocr_bbox = []
+    if not ocr_text:
+        ocr_text = []
 
     ocr_bbox_elem = [{'type': 'text', 'bbox':box, 'interactivity':False, 'content':txt, 'source': 'box_ocr_content_ocr'} for box, txt in zip(ocr_bbox, ocr_text) if int_box_area(box, w, h) > 0] 
     xyxy_elem = [{'type': 'icon', 'bbox':box, 'interactivity':True, 'content':None} for box in xyxy.tolist() if int_box_area(box, w, h) > 0]
@@ -442,18 +443,25 @@ def get_som_labeled_img(image_source: Union[str, Image.Image], model=None, BOX_T
     # sort the filtered_boxes so that the one with 'content': None is at the end, and get the index of the first 'content': None
     filtered_boxes_elem = sorted(filtered_boxes, key=lambda x: x['content'] is None)
     # get the index of the first 'content': None
-    starting_idx = next((i for i, box in enumerate(filtered_boxes_elem) if box['content'] is None), -1)
-    filtered_boxes = torch.tensor([box['bbox'] for box in filtered_boxes_elem])
+    starting_idx = next((i for i, box in enumerate(filtered_boxes_elem) if box['content'] is None), len(filtered_boxes_elem))
+    if filtered_boxes_elem:
+        filtered_boxes = torch.tensor([box['bbox'] for box in filtered_boxes_elem], dtype=torch.float32)
+    else:
+        filtered_boxes = torch.empty((0, 4), dtype=torch.float32)
     print('len(filtered_boxes):', len(filtered_boxes), starting_idx)
 
     # get parsed icon local semantics
     time1 = time.time()
-    if use_local_semantics:
+    if use_local_semantics and starting_idx < len(filtered_boxes_elem):
         caption_model = caption_model_processor['model']
         if 'phi3_v' in caption_model.config.model_type: 
             parsed_content_icon = get_parsed_content_icon_phi3v(filtered_boxes, ocr_bbox, image_source, caption_model_processor)
         else:
             parsed_content_icon = get_parsed_content_icon(filtered_boxes, starting_idx, image_source, caption_model_processor, prompt=prompt,batch_size=batch_size)
+    else:
+        parsed_content_icon = []
+
+    if use_local_semantics:
         ocr_text = [f"Text Box ID {i}: {txt}" for i, txt in enumerate(ocr_text)]
         icon_start = len(ocr_text)
         parsed_content_icon_ls = []
