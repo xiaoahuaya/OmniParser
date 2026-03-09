@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "topics": [
+    {
+      "id": "openclaw",
+      "label": "openclaw",
+      "aliases": ["openclaw", "open claw", "agent framework"]
+    },
+    {
+      "id": "dog_care",
+      "label": "养狗",
+      "aliases": ["养狗", "狗狗", "犬", "训犬", "宠物狗"]
+    },
+    {
+      "id": "cooking",
+      "label": "烹饪",
+      "aliases": ["烹饪", "做饭", "料理", "家常菜", "厨房"]
+    },
+    {
+      "id": "education",
+      "label": "教育",
+      "aliases": ["教育", "学习", "教培", "课程", "备考"]
+    },
+    {
+      "id": "development",
+      "label": "开发",
+      "aliases": ["开发", "编程", "程序员", "工程", "技术"]
+    }
+  ]
+}

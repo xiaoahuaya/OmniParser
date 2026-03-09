@@ -8,12 +8,19 @@ OUTPUT_DIR = "./tmp/outputs"
 
 class OmniParserClient:
     def __init__(self, 
-                 url: str) -> None:
+                 url: str,
+                 windows_host_url: str | None = None,
+                 output_dir: str = OUTPUT_DIR) -> None:
         self.url = url
+        self.windows_host_url = windows_host_url
+        self.output_dir = output_dir
 
     def __call__(self,):
-        screenshot, screenshot_path = get_screenshot()
-        screenshot_path = str(screenshot_path)
+        screenshot, screenshot_path = get_screenshot(
+            windows_host_url=self.windows_host_url,
+            output_dir=self.output_dir,
+        )
+        screenshot_path = str(Path(screenshot_path).resolve())
         image_base64 = encode_image(screenshot_path)
         # Request OmniParser server; keep console output minimal.
 
@@ -33,7 +40,9 @@ class OmniParserClient:
 
         som_image_data = base64.b64decode(response_json['som_image_base64'])
         screenshot_path_uuid = Path(screenshot_path).stem.replace("screenshot_", "")
-        som_screenshot_path = f"{OUTPUT_DIR}/screenshot_som_{screenshot_path_uuid}.png"
+        output_dir = Path(self.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        som_screenshot_path = str((output_dir / f"screenshot_som_{screenshot_path_uuid}.png").resolve())
         with open(som_screenshot_path, "wb") as f:
             f.write(som_image_data)
         
@@ -41,6 +50,8 @@ class OmniParserClient:
         response_json['height'] = screenshot.size[1]
         response_json['original_screenshot_base64'] = image_base64
         response_json['screenshot_uuid'] = screenshot_path_uuid
+        response_json['screenshot_path'] = screenshot_path
+        response_json['som_screenshot_path'] = som_screenshot_path
         response_json = self.reformat_messages(response_json)
         return response_json
     

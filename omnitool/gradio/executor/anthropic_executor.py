@@ -22,11 +22,8 @@ class AnthropicExecutor:
         tool_output_callback: Callable[[Any, str], None],
         windows_host_url: str | None = None,
     ):
-        if windows_host_url:
-            import os
-            os.environ["OMNITOOL_WINDOWS_HOST_URL"] = windows_host_url
         self.tool_collection = ToolCollection(
-            ComputerTool()
+            ComputerTool(windows_host_url=windows_host_url)
         )
         self.output_callback = output_callback
         self.tool_output_callback = tool_output_callback

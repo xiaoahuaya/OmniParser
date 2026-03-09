@@ -49,7 +49,16 @@ def get_default_config() -> Dict[str, Any]:
                 "base_url": "https://right.codes/codex/v1",
                 "api_key": "",
                 "default_model": "gpt-5.2-codex",
-                "available_models": ["gpt-5.2-codex", "gpt-5.2", "gpt-5.1-codex-max", "gpt-5.1-codex", "gpt-5.1", "gpt-5-codex"]
+                "available_models": [
+                    "gpt-5.4",
+                    "gpt-5.3",
+                    "gpt-5.2-codex",
+                    "gpt-5.2",
+                    "gpt-5.1-codex-max",
+                    "gpt-5.1-codex",
+                    "gpt-5.1",
+                    "gpt-5-codex",
+                ]
             },
             "claude_proxy": {
                 "name": "Claude 中转",

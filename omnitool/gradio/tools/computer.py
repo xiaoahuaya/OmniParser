@@ -118,7 +118,7 @@ class ComputerTool(BaseAnthropicTool):
     def to_params(self) -> BetaToolComputerUse20241022Param:
         return {"name": self.name, "type": self.api_type, **self.options}
 
-    def __init__(self, is_scaling: bool = False):
+    def __init__(self, is_scaling: bool = False, windows_host_url: str | None = None):
         super().__init__()
 
         # Get screen width and height using Windows command
@@ -126,7 +126,7 @@ class ComputerTool(BaseAnthropicTool):
         self.offset_x = 0
         self.offset_y = 0
         self.is_scaling = is_scaling
-        self.windows_host_url = os.getenv("OMNITOOL_WINDOWS_HOST_URL", "").strip()
+        self.windows_host_url = (windows_host_url or os.getenv("OMNITOOL_WINDOWS_HOST_URL", "")).strip()
         self.remote_mode = bool(self.windows_host_url)
         if self.remote_mode and not self.windows_host_url.startswith("http"):
             self.windows_host_url = f"http://{self.windows_host_url}"
@@ -466,7 +466,12 @@ class ComputerTool(BaseAnthropicTool):
         if not hasattr(self, 'target_dimension'):
             self.target_dimension = MAX_SCALING_TARGETS["WXGA"]
         width, height = self.target_dimension["width"], self.target_dimension["height"]
-        screenshot, path = get_screenshot(resize=True, target_width=width, target_height=height)
+        screenshot, path = get_screenshot(
+            resize=True,
+            target_width=width,
+            target_height=height,
+            windows_host_url=self.windows_host_url if self.remote_mode else None,
+        )
         time.sleep(0.7) # avoid async error as actions take time to complete
         return ToolResult(base64_image=base64.b64encode(path.read_bytes()).decode())
 

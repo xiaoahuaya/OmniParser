@@ -71,18 +71,24 @@ def _cleanup_output_dir(output_dir: Path):
 #         raise ToolError(f"Failed to capture screenshot: {str(e)}")
 
 
-def get_screenshot(resize: bool = False, target_width: int = 1920, target_height: int = 1080):
+def get_screenshot(
+    resize: bool = False,
+    target_width: int = 1920,
+    target_height: int = 1080,
+    windows_host_url: str | None = None,
+    output_dir: str | Path | None = None,
+):
     """Capture screenshot from remote host if configured; otherwise local capture."""
     # 创建保存截图的目录
-    output_dir = Path(OUTPUT_DIR)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    save_dir = Path(output_dir) if output_dir else Path(OUTPUT_DIR)
+    save_dir.mkdir(parents=True, exist_ok=True)
 
     # 生成唯一的文件名
-    path = output_dir / f"screenshot_{uuid4().hex}.png"
+    path = save_dir / f"screenshot_{uuid4().hex}.png"
 
     global _CAPTURE_COUNT
     try:
-        windows_host_url = os.getenv("OMNITOOL_WINDOWS_HOST_URL", "").strip()
+        windows_host_url = (windows_host_url or os.getenv("OMNITOOL_WINDOWS_HOST_URL", "")).strip()
         if windows_host_url:
             if not windows_host_url.startswith("http"):
                 windows_host_url = f"http://{windows_host_url}"
@@ -106,7 +112,7 @@ def get_screenshot(resize: bool = False, target_width: int = 1920, target_height
         screenshot.save(path)
         _CAPTURE_COUNT += 1
         if OUTPUT_CLEANUP_INTERVAL > 0 and (_CAPTURE_COUNT % OUTPUT_CLEANUP_INTERVAL == 0):
-            _cleanup_output_dir(output_dir)
+            _cleanup_output_dir(save_dir)
 
         return screenshot, path
     except Exception as e:

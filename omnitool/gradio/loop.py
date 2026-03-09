@@ -3,11 +3,11 @@ Agentic sampling loop that calls the Anthropic API and local implenmentation of 
 """
 from collections.abc import Callable
 import base64
-import os
 import re
 from io import BytesIO
 from PIL import Image
 import time
+from types import SimpleNamespace
 from enum import Enum
 import sys
 
@@ -27,7 +27,8 @@ from anthropic.types import (
 from anthropic.types.beta import (
     BetaContentBlock,
     BetaMessage,
-    BetaMessageParam
+    BetaMessageParam,
+    BetaToolUseBlock,
 )
 from tools import ToolResult
 
@@ -54,6 +55,11 @@ REPEAT_COORD_HINT = (
     "请尝试完全不同的方法：滚动页面、点击其他元素、使用键盘快捷键、或等待页面加载。"
     "如果目标元素不可交互，请跳过此步骤。"
 )
+REPEAT_COORD_SCROLL_RECOVERY_HINT = (
+    "⚙️ 重复点击拦截：当前处于内容流/搜索结果页。下一步必须先执行滚轮下滑"
+    "（scroll_down）或按 PageDown，再选择新卡片；禁止继续点击当前区域。"
+)
+SCROLL_KEY_FALLBACK_HINT = "⚙️ 滚动兜底：滚轮变化不明显，自动尝试键盘翻页（PageDown/PageUp）。"
 NAVIGATION_RECOVERY_HINT = (
     "检测到导航异常（如 bing/challenge/验证页）。下一步必须使用键盘恢复："
     "先按 Ctrl+L，再输入完整目标 URL（https://www.xiaohongshu.com）并回车。"
@@ -73,6 +79,45 @@ ACTION_GATE_RECOVERY_HINT = (
     "1) Esc 关闭弹层 2) Ctrl+L 3) 输入目标URL并回车 或切换到可编辑输入框后 Ctrl+A + 粘贴。"
 )
 ACTION_GATE_DIFF_THRESHOLD = 0.012
+ACTION_GATE_DIFF_THRESHOLD_BY_ACTION = {
+    # 输入/滚动动作的可见变化通常更细微，阈值适当降低以减少误判。
+    "type": 0.004,
+    "type_submit": 0.004,
+    "scroll_down": 0.007,
+    "scroll_up": 0.007,
+    "drag": 0.007,
+    "mouse_wheel": 0.007,
+    "left_click": 0.009,
+    "double_click": 0.009,
+}
+ACTION_GATE_NON_VISUAL_KEYS = {
+    "esc",
+    "tab",
+    "shift+tab",
+    "ctrl+a",
+    "ctrl+c",
+    "ctrl+v",
+    "ctrl+x",
+    "backspace",
+    "delete",
+    "left",
+    "right",
+    "up",
+    "down",
+    "home",
+    "end",
+}
+ACTION_GATE_FOCUS_TARGET_KEYWORDS = (
+    "输入",
+    "粘贴",
+    "搜索",
+    "评论",
+    "输入框",
+    "textbox",
+    "search",
+    "title",
+    "正文",
+)
 REQUIRED_FIELD_RECOVERY_HINT = (
     "⚠️ 提交前校验未通过：检测到标题可能缺失。"
     "请先定位标题输入框并填写标题，再继续“下一步/一键排版/发布”类动作。"
@@ -122,24 +167,54 @@ def _element_signature(parsed_screen: dict) -> str:
     return "|".join(parts)
 
 
-def _action_gate_passed(pre_screen: dict, post_screen: dict) -> tuple[bool, str]:
+def _action_gate_passed(
+    pre_screen: dict,
+    post_screen: dict,
+    vlm_response_json: dict | None = None,
+) -> tuple[bool, str]:
     pre_info = pre_screen.get("screen_info", "") or ""
     post_info = post_screen.get("screen_info", "") or ""
     pre_url = _extract_url_like(pre_info)
     post_url = _extract_url_like(post_info)
     url_changed = bool(pre_url and post_url and pre_url != post_url)
 
+    action = ""
+    key_value = ""
+    target_text = ""
+    if isinstance(vlm_response_json, dict):
+        action = str(vlm_response_json.get("Next Action", "") or "").lower().strip()
+        key_value = str(vlm_response_json.get("value", "") or "").lower().replace(" ", "")
+        box_id = _safe_int(vlm_response_json.get("Box ID"))
+        target_text = _get_box_content(pre_screen, box_id).lower()
+
+    diff_threshold = ACTION_GATE_DIFF_THRESHOLD_BY_ACTION.get(action, ACTION_GATE_DIFF_THRESHOLD)
+
     pre_b64 = pre_screen.get("original_screenshot_base64")
     post_b64 = post_screen.get("original_screenshot_base64")
     diff_score = _screen_change_score(pre_b64, post_b64) if pre_b64 and post_b64 else 0.0
-    visual_changed = diff_score >= ACTION_GATE_DIFF_THRESHOLD
+    visual_changed = diff_score >= diff_threshold
 
     pre_sig = _element_signature(pre_screen)
     post_sig = _element_signature(post_screen)
     element_changed = pre_sig != post_sig
 
-    passed = url_changed or visual_changed or element_changed
-    reason = f"url_changed={url_changed}, visual_changed={visual_changed}({diff_score:.4f}), element_changed={element_changed}"
+    # 非视觉键位（Esc/Tab/Ctrl+A 等）本来就可能不引起明显视觉变化。
+    non_visual_key_ok = action == "key" and (
+        key_value in ACTION_GATE_NON_VISUAL_KEYS or key_value.startswith("ctrl+l")
+    )
+
+    # 允许“聚焦输入框”类点击在无明显画面变化时继续，由后续输入探测兜底。
+    focus_click_ok = action in ("left_click", "double_click") and any(
+        token in target_text for token in ACTION_GATE_FOCUS_TARGET_KEYWORDS
+    )
+
+    passed = url_changed or visual_changed or element_changed or non_visual_key_ok or focus_click_ok
+    reason = (
+        f"url_changed={url_changed}, visual_changed={visual_changed}"
+        f"(diff={diff_score:.4f}, threshold={diff_threshold:.4f}), "
+        f"element_changed={element_changed}, non_visual_key_ok={non_visual_key_ok}, "
+        f"focus_click_ok={focus_click_ok}, action={action or 'unknown'}"
+    )
     return passed, reason
 
 
@@ -246,6 +321,105 @@ def _blocked_editor_exit_action(vlm_response_json: dict, parsed_screen: dict) ->
         return XHS_EDITOR_BLOCKED_CLICK_HINT
     return None
 
+
+def _normalize_text_for_match(text: str) -> str:
+    return re.sub(r"\s+", "", (text or "")).lower()
+
+
+def _topic_anchor_evidence(parsed_screen: dict, topic_term: str) -> dict:
+    topic_raw = (topic_term or "").strip().lower()
+    if not topic_raw:
+        return {"topic": "", "input_hit": False, "results_hit": False, "anchored": False}
+
+    screen_info = str(parsed_screen.get("screen_info", "") or "")
+    screen_norm = _normalize_text_for_match(screen_info)
+    topic_norm = _normalize_text_for_match(topic_raw)
+
+    items = parsed_screen.get("parsed_content_list", []) or []
+    contents = [_normalize_text_for_match(str(item.get("content", "") or "")) for item in items]
+
+    input_hit = bool(
+        re.search(fr"(搜索|search).{{0,24}}{re.escape(topic_norm)}", screen_norm)
+        or re.search(fr"{re.escape(topic_norm)}.{{0,24}}(搜索|search)", screen_norm)
+    )
+    if not input_hit:
+        for content in contents:
+            if topic_norm in content and ("搜索" in content or "search" in content):
+                input_hit = True
+                break
+
+    results_markers = ("结果", "话题", "笔记", "综合", "相关", "discover", "explore")
+    has_results_marker = any(marker in screen_norm for marker in results_markers)
+    result_hits = sum(
+        1 for content in contents
+        if topic_norm in content and ("搜索" not in content and "search" not in content)
+    )
+    results_hit = (has_results_marker and result_hits >= 1) or (result_hits >= 2)
+
+    return {
+        "topic": topic_raw,
+        "input_hit": input_hit,
+        "results_hit": results_hit,
+        "anchored": input_hit and results_hit,
+    }
+
+
+def _build_action_gate_recovery_hint(vlm_response_json: dict, parsed_screen: dict) -> str:
+    base = "⚠️ 动作确认门: 刚才动作后未检测到有效变化（URL未变、画面差异过小、元素状态未变）。禁止重复同一点击。"
+    if not isinstance(vlm_response_json, dict):
+        return base + " 请先按 Esc 重置状态，再改用不同位置点击或键盘 Tab+Enter。"
+
+    action = str(vlm_response_json.get("Next Action", "") or "").lower().strip()
+    box_id = _safe_int(vlm_response_json.get("Box ID"))
+    target_text = _get_box_content(parsed_screen, box_id).lower()
+    key_value = str(vlm_response_json.get("value", "") or "").lower().replace(" ", "")
+
+    if action in ("type", "type_submit"):
+        return (
+            base
+            + " 输入动作未生效。请执行恢复动作：1) Esc 2) 单击目标输入框本体 3) Ctrl+A 后重新输入/粘贴。"
+            " 仅当确认页面偏航时再使用 Ctrl+L。"
+        )
+
+    if action in ("scroll_down", "scroll_up", "drag", "mouse_wheel"):
+        return (
+            base
+            + " 滚动动作未生效。请执行恢复动作：1) Esc 2) 单击内容区域中心 3) 再次滚动或改用翻页按钮/方向键。"
+            " 不要直接 Ctrl+L。"
+        )
+
+    if action == "key":
+        if key_value in ("enter", "ctrl+enter"):
+            return (
+                base
+                + " 提交按键未生效。请执行恢复动作：1) Esc 2) 重新聚焦目标控件（按钮/输入框）3) 再按 Enter。"
+            )
+        if "ctrl+l" in key_value:
+            return (
+                base
+                + " 地址栏恢复未生效。请继续输入完整目标 URL 回车；若仍无变化，Esc 后回到页面控件。"
+            )
+        return base + " 键盘动作未生效。请 Esc 后改用同语义的不同动作。"
+
+    if action in ("left_click", "double_click", "right_click"):
+        if any(token in target_text for token in ("搜索", "search")):
+            return (
+                base
+                + " 搜索框点击未生效。请执行恢复动作：1) Esc 2) 单击搜索输入框本体 3) 输入关键词并回车。"
+            )
+        if any(token in target_text for token in ("评论", "发送", "发布", "下一步", "一键排版", "保存", "确认")):
+            return (
+                base
+                + " 按钮点击未生效。请执行恢复动作：1) Esc 2) 改点按钮内不同位置或双击 3) 必要时用 Enter 触发。"
+            )
+        return (
+            base
+            + " 点击未生效。请执行恢复动作：1) Esc 2) 改点同控件不同区域/双击 3) 或用 Tab+Enter。"
+            " 仅导航异常时使用 Ctrl+L。"
+        )
+
+    return ACTION_GATE_RECOVERY_HINT
+
 def _is_similar_coord(coord1: list, coord2: list, threshold: int = REPEAT_COORD_THRESHOLD) -> bool:
     """判断两个坐标是否相近"""
     if not coord1 or not coord2:
@@ -263,6 +437,60 @@ def _check_repeat_coords(recent_coords: list, new_coord: list) -> int:
         else:
             break
     return count
+
+
+def _is_click_like_action(vlm_response_json: dict) -> bool:
+    if not isinstance(vlm_response_json, dict):
+        return False
+    action = str(vlm_response_json.get("Next Action", "") or "").lower().strip()
+    return action in ("left_click", "double_click", "right_click")
+
+
+def _is_scroll_like_action(vlm_response_json: dict) -> bool:
+    if not isinstance(vlm_response_json, dict):
+        return False
+    action = str(vlm_response_json.get("Next Action", "") or "").lower().strip()
+    return action in ("scroll_down", "scroll_up", "mouse_wheel")
+
+
+def _is_xhs_feed_or_search_context(parsed_screen: dict) -> bool:
+    screen_info = str(parsed_screen.get("screen_info", "") or "").lower()
+    if not screen_info:
+        return False
+    if "creator.xiaohongshu.com" in screen_info:
+        return False
+    if "xiaohongshu" not in screen_info and "小红书" not in screen_info:
+        return False
+    markers = (
+        "search_result",
+        "搜索结果",
+        "发现",
+        "推荐",
+        "explore",
+        "话题",
+        "相关内容",
+    )
+    return any(marker in screen_info for marker in markers)
+
+
+def _forced_scroll_tool_response() -> object:
+    tool_block = BetaToolUseBlock(
+        type="tool_use",
+        id=f"toolu_forced_scroll_{int(time.time() * 1000)}",
+        name="computer",
+        input={"action": "scroll_down"},
+    )
+    return SimpleNamespace(content=[tool_block])
+
+
+def _forced_key_tool_response(key_text: str) -> object:
+    tool_block = BetaToolUseBlock(
+        type="tool_use",
+        id=f"toolu_forced_key_{int(time.time() * 1000)}",
+        name="computer",
+        input={"action": "key", "text": key_text},
+    )
+    return SimpleNamespace(content=[tool_block])
 
 def _downsample_gray_pixels(image_b64: str, size: int = SCREEN_DIFF_SIZE) -> list[int]:
     image_bytes = base64.b64decode(image_b64)
@@ -375,6 +603,7 @@ def sampling_loop_sync(
     max_tokens: int = 4096,
     omniparser_url: str,
     windows_host_url: str | None = None,
+    capture_output_dir: str | None = None,
     save_folder: str = "./uploads",
     proxy_base_url: str = None,
     proxy_model: str = None,
@@ -383,6 +612,8 @@ def sampling_loop_sync(
     plan_steps: list[dict] | None = None,
     plan_state: dict | None = None,
     plan_update_callback: Callable[[dict], None] | None = None,
+    topic_anchor_term: str | None = None,
+    topic_anchor_callback: Callable[[dict], None] | None = None,
 ):
     """
     Synchronous agentic sampling loop for the assistant/tool interaction of computer use.
@@ -392,9 +623,11 @@ def sampling_loop_sync(
     no_change_count = 0
     step_count = 0
     start_time = time.time()
-    if windows_host_url:
-        os.environ["OMNITOOL_WINDOWS_HOST_URL"] = windows_host_url
-    omniparser_client = OmniParserClient(url=f"http://{omniparser_url}/parse/")
+    omniparser_client = OmniParserClient(
+        url=f"http://{omniparser_url}/parse/",
+        windows_host_url=windows_host_url,
+        output_dir=capture_output_dir or "./tmp/outputs",
+    )
     if model == "claude-3-5-sonnet-20241022":
         # Register Actor and Executor
         actor = AnthropicActor(
@@ -510,6 +743,8 @@ def sampling_loop_sync(
         recent_coords = []
         last_recovery_hint_step = -1
         last_viewport_hint_step = -1
+        last_scroll_fallback_step = -1
+        anchor_announced = False
 
         while True:
             if max_steps is not None and step_count >= max_steps:
@@ -521,6 +756,19 @@ def sampling_loop_sync(
             step_count += 1
             parsed_screen = omniparser_client()
             pre_action_screen = parsed_screen
+            if topic_anchor_term:
+                anchor_evidence = _topic_anchor_evidence(parsed_screen, topic_anchor_term)
+                if topic_anchor_callback:
+                    topic_anchor_callback(anchor_evidence)
+                if anchor_evidence.get("anchored") and (not anchor_announced):
+                    anchor_msg = (
+                        f"🎯 页面证据锚定完成: topic={anchor_evidence.get('topic')} "
+                        f"input={int(bool(anchor_evidence.get('input_hit')))} "
+                        f"results={int(bool(anchor_evidence.get('results_hit')))}"
+                    )
+                    messages.append({"role": "assistant", "content": anchor_msg})
+                    output_callback(anchor_msg)
+                    anchor_announced = True
             screen_info_lower = (parsed_screen.get("screen_info", "") or "").lower()
             if any(k in screen_info_lower for k in ["bing", "challenge", "验证", "captcha", "最后一步"]):
                 if step_count - last_recovery_hint_step >= 2:
@@ -564,6 +812,15 @@ def sampling_loop_sync(
                     hint = REPEAT_COORD_HINT.format(count=repeat_count + 1, coord=new_coord)
                     output_callback(hint)
                     messages.append({"role": "user", "content": hint})
+                    if _is_click_like_action(vlm_response_json or {}) and _is_xhs_feed_or_search_context(parsed_screen):
+                        output_callback(REPEAT_COORD_SCROLL_RECOVERY_HINT)
+                        messages.append({"role": "user", "content": REPEAT_COORD_SCROLL_RECOVERY_HINT})
+                        # Hard recovery: force one scroll action instead of only提示，避免持续点击同一区域。
+                        tools_use_needed = _forced_scroll_tool_response()
+                        vlm_response_json = {"Next Action": "scroll_down", "value": "", "Box ID": None}
+                        recent_coords.append(new_coord)
+                        if len(recent_coords) > 10:
+                            recent_coords.pop(0)
                 recent_coords.append(new_coord)
                 if len(recent_coords) > 10:
                     recent_coords.pop(0)
@@ -578,10 +835,44 @@ def sampling_loop_sync(
 
             # Action gate: only continue normally when at least one signal changes.
             post_action_screen = omniparser_client()
-            gate_passed, gate_reason = _action_gate_passed(pre_action_screen, post_action_screen)
+            if topic_anchor_term:
+                anchor_evidence = _topic_anchor_evidence(post_action_screen, topic_anchor_term)
+                if topic_anchor_callback:
+                    topic_anchor_callback(anchor_evidence)
+                if anchor_evidence.get("anchored") and (not anchor_announced):
+                    anchor_msg = (
+                        f"🎯 页面证据锚定完成: topic={anchor_evidence.get('topic')} "
+                        f"input={int(bool(anchor_evidence.get('input_hit')))} "
+                        f"results={int(bool(anchor_evidence.get('results_hit')))}"
+                    )
+                    messages.append({"role": "assistant", "content": anchor_msg})
+                    output_callback(anchor_msg)
+                    anchor_announced = True
+            gate_passed, gate_reason = _action_gate_passed(
+                pre_action_screen,
+                post_action_screen,
+                vlm_response_json or {},
+            )
             if not gate_passed:
-                recovery_msg = f"{ACTION_GATE_RECOVERY_HINT}\n[{gate_reason}]"
+                recovery_hint = _build_action_gate_recovery_hint(vlm_response_json or {}, pre_action_screen)
+                recovery_msg = f"{recovery_hint}\n[{gate_reason}]"
                 messages.append({"role": "user", "content": recovery_msg})
                 output_callback(recovery_msg)
+                if _is_scroll_like_action(vlm_response_json or {}) and (step_count - last_scroll_fallback_step >= 2):
+                    next_action = str((vlm_response_json or {}).get("Next Action", "") or "").lower().strip()
+                    fallback_key = "pagedown" if next_action != "scroll_up" else "pageup"
+                    output_callback(SCROLL_KEY_FALLBACK_HINT)
+                    messages.append({"role": "user", "content": SCROLL_KEY_FALLBACK_HINT})
+                    forced_response = _forced_key_tool_response(fallback_key)
+                    forced_tool_result_content = None
+                    for message, forced_tool_result_content in executor(forced_response, messages):
+                        yield message
+                    if not forced_tool_result_content:
+                        return messages
+                    messages.append({"content": forced_tool_result_content, "role": "user"})
+                    post_action_screen = omniparser_client()
+                    prev_screen_b64 = post_action_screen.get("original_screenshot_base64")
+                    last_scroll_fallback_step = step_count
+                    continue
             # Keep latest frame as previous baseline.
             prev_screen_b64 = post_action_screen.get("original_screenshot_base64")

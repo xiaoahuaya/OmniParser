@@ -31,6 +31,19 @@ LLM_ERROR_PATTERNS = (
     "失败",
 )
 DEBUG_LOGS = os.getenv("OMNITOOL_DEBUG", "").lower() in ("1", "true", "yes")
+VALID_NEXT_ACTIONS = {
+    "left_click",
+    "right_click",
+    "double_click",
+    "drag",
+    "type",
+    "key",
+    "hover",
+    "scroll_up",
+    "scroll_down",
+    "wait",
+    "none",
+}
 
 def _debug_print(*args, **kwargs):
     if DEBUG_LOGS:
@@ -77,6 +90,207 @@ def extract_data(input_string, data_type):
     matches = re.findall(pattern, input_string, re.DOTALL)
     # Return the first match if exists, trimming whitespace and ignoring potential closing backticks
     return matches[0][0].strip() if matches else input_string
+
+
+def _extract_first_json_object(text: str) -> str | None:
+    if not text:
+        return None
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        in_string = False
+        escaped = False
+        for idx in range(start, len(text)):
+            ch = text[idx]
+            if escaped:
+                escaped = False
+                continue
+            if ch == "\\":
+                escaped = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start: idx + 1]
+        start = text.find("{", start + 1)
+    return None
+
+
+def _normalize_next_action(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "wait"
+    lowered = raw.lower().strip("`'\"")
+
+    alias_patterns = (
+        (r"\bnone\b|完成|结束|停止|暂停", "None"),
+        (r"\bdouble[ _-]?click\b|双击", "double_click"),
+        (r"\bright[ _-]?click\b|右键", "right_click"),
+        (r"\bleft[ _-]?click\b|点击|单击|点按|click", "left_click"),
+        (r"\bscroll[ _-]?down\b|向下滚|下滑|下滚|page ?down", "scroll_down"),
+        (r"\bscroll[ _-]?up\b|向上滚|上滑|上滚|page ?up", "scroll_up"),
+        (r"\bdrag\b|拖拽|拖动", "drag"),
+        (r"\bhover\b|悬停", "hover"),
+        (r"\btype\b|输入", "type"),
+        (r"\bkey\b|快捷键|按键|按下|press", "key"),
+        (r"\bwait\b|等待", "wait"),
+    )
+    for pattern, action in alias_patterns:
+        if re.search(pattern, lowered, re.IGNORECASE):
+            return action
+
+    normalized = lowered.replace("-", "_").replace(" ", "_")
+    normalized = normalized.split(",", 1)[0].strip()
+    if normalized in VALID_NEXT_ACTIONS:
+        return "None" if normalized == "none" else normalized
+    return "wait"
+
+
+def _extract_key_value(text: str) -> str:
+    if not text:
+        return ""
+    shortcut = re.search(r"\b(ctrl|alt|shift|win)\s*\+\s*[a-z0-9]+\b", text, re.IGNORECASE)
+    if shortcut:
+        return re.sub(r"\s+", "", shortcut.group(0).lower())
+    for candidate in ("enter", "esc", "escape", "tab", "backspace", "pagedown", "pageup", "up", "down", "left", "right"):
+        if re.search(rf"\b{candidate}\b", text, re.IGNORECASE):
+            return "esc" if candidate == "escape" else candidate
+    return ""
+
+
+def _to_int_or_none(value: object) -> int | None:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _sanitize_action_payload(payload: dict, raw_text: str) -> dict:
+    parsed = dict(payload or {})
+    action = _normalize_next_action(parsed.get("Next Action") or parsed.get("next_action"))
+    parsed["Next Action"] = action
+
+    box_id = _to_int_or_none(parsed.get("Box ID"))
+    if box_id is not None:
+        parsed["Box ID"] = box_id
+    else:
+        parsed.pop("Box ID", None)
+
+    from_id = _to_int_or_none(parsed.get("From Box ID"))
+    to_id = _to_int_or_none(parsed.get("To Box ID"))
+    if from_id is not None:
+        parsed["From Box ID"] = from_id
+    else:
+        parsed.pop("From Box ID", None)
+    if to_id is not None:
+        parsed["To Box ID"] = to_id
+    else:
+        parsed.pop("To Box ID", None)
+
+    if action in {"left_click", "right_click", "double_click", "hover", "type"} and box_id is None:
+        parsed["Next Action"] = "wait"
+        parsed.setdefault("Reasoning", "缺少 Box ID，已降级为 wait 避免误点击。")
+    elif action == "drag" and (from_id is None or to_id is None):
+        parsed["Next Action"] = "wait"
+        parsed.setdefault("Reasoning", "拖拽缺少起止元素，已降级为 wait。")
+    elif action == "key":
+        key_value = str(parsed.get("value", "") or _extract_key_value(raw_text)).strip()
+        if key_value:
+            parsed["value"] = key_value
+        else:
+            parsed["Next Action"] = "wait"
+            parsed.pop("value", None)
+            parsed.setdefault("Reasoning", "快捷键值为空，已降级为 wait。")
+    elif action == "type":
+        parsed["value"] = str(parsed.get("value", ""))
+
+    if "Reasoning" not in parsed and "reasoning" in parsed:
+        parsed["Reasoning"] = str(parsed.get("reasoning"))
+    return parsed
+
+
+def _extract_loose_action_fields(text: str) -> dict:
+    parsed: dict = {}
+    if not text:
+        return parsed
+
+    action_match = re.search(r"(?:next\s*action|action|动作)\s*[:：]\s*([^\n\r]+)", text, re.IGNORECASE)
+    if action_match:
+        parsed["Next Action"] = _normalize_next_action(action_match.group(1))
+    else:
+        parsed["Next Action"] = _normalize_next_action(text)
+
+    box_match = re.search(r"(?:box\s*id|框\s*id)\s*[:：]?\s*(\d+)", text, re.IGNORECASE)
+    if box_match:
+        parsed["Box ID"] = int(box_match.group(1))
+
+    from_match = re.search(r"(?:from\s*box\s*id)\s*[:：]?\s*(\d+)", text, re.IGNORECASE)
+    to_match = re.search(r"(?:to\s*box\s*id)\s*[:：]?\s*(\d+)", text, re.IGNORECASE)
+    if from_match and to_match:
+        parsed["From Box ID"] = int(from_match.group(1))
+        parsed["To Box ID"] = int(to_match.group(1))
+
+    value_match = re.search(r"(?:value|输入|文本)\s*[:：]\s*([^\n\r]+)", text, re.IGNORECASE)
+    if value_match:
+        parsed["value"] = value_match.group(1).strip().strip("`\"'")
+
+    if parsed.get("Next Action") == "key" and not parsed.get("value"):
+        parsed["value"] = _extract_key_value(text)
+    if parsed.get("Next Action") == "type" and "value" not in parsed:
+        parsed["value"] = ""
+
+    reasoning = text.strip()
+    if reasoning:
+        parsed.setdefault("Reasoning", reasoning[:500])
+
+    return _sanitize_action_payload(parsed, text)
+
+
+def _parse_vlm_response(vlm_response: object) -> tuple[dict | None, bool, str | None]:
+    if not isinstance(vlm_response, str):
+        return None, False, "LLM response is not text"
+    raw_text = vlm_response.strip()
+    if not raw_text:
+        return None, False, "LLM response is empty"
+
+    candidates: list[str] = []
+    fenced_json = extract_data(raw_text, "json").strip()
+    if fenced_json:
+        candidates.append(fenced_json)
+    candidates.append(raw_text)
+    first_obj = _extract_first_json_object(raw_text)
+    if first_obj:
+        candidates.append(first_obj.strip())
+
+    seen = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return _sanitize_action_payload(parsed, raw_text), True, None
+        except json.JSONDecodeError:
+            continue
+
+    loose = _extract_loose_action_fields(raw_text)
+    if loose:
+        return loose, False, "Response was not strict JSON; used tolerant parser"
+
+    return {
+        "Reasoning": "模型输出无法解析，执行安全兜底动作 wait。",
+        "Next Action": "wait",
+    }, False, "Response parse fallback to wait"
 
 class VLMOrchestratedAgent:
     def __init__(
@@ -159,6 +373,8 @@ class VLMOrchestratedAgent:
         latency_omniparser = parsed_screen['latency']
         screen_info = str(parsed_screen['screen_info'])
         screenshot_uuid = parsed_screen['screenshot_uuid']
+        screenshot_path = parsed_screen.get("screenshot_path", f"{OUTPUT_DIR}/screenshot_{screenshot_uuid}.png")
+        som_screenshot_path = parsed_screen.get("som_screenshot_path", f"{OUTPUT_DIR}/screenshot_som_{screenshot_uuid}.png")
         screen_width, screen_height = parsed_screen['width'], parsed_screen['height']
 
         boxids_and_labels = parsed_screen["screen_info"]
@@ -169,11 +385,17 @@ class VLMOrchestratedAgent:
         _remove_som_images(planner_messages)
         _maybe_filter_to_n_most_recent_images(planner_messages, self.only_n_most_recent_images)
 
-        if isinstance(planner_messages[-1], dict):
-            if not isinstance(planner_messages[-1]["content"], list):
-                planner_messages[-1]["content"] = [planner_messages[-1]["content"]]
-            planner_messages[-1]["content"].append(f"{OUTPUT_DIR}/screenshot_{screenshot_uuid}.png")
-            planner_messages[-1]["content"].append(f"{OUTPUT_DIR}/screenshot_som_{screenshot_uuid}.png")
+        if not planner_messages or not isinstance(planner_messages[-1], dict):
+            planner_messages.append({"role": "user", "content": []})
+        current_content = planner_messages[-1].get("content")
+        if isinstance(current_content, list):
+            planner_messages[-1]["content"] = current_content
+        elif current_content in (None, ""):
+            planner_messages[-1]["content"] = []
+        else:
+            planner_messages[-1]["content"] = [current_content]
+        planner_messages[-1]["content"].append(screenshot_path)
+        planner_messages[-1]["content"].append(som_screenshot_path)
 
         last_error = None
         vlm_response = None
@@ -229,19 +451,24 @@ class VLMOrchestratedAgent:
                 continue
 
             latency_vlm = time.time() - start
+            parsed_json, strict_json, parse_error = _parse_vlm_response(vlm_response)
+            if parsed_json is not None:
+                # 先看解析结果：严格 JSON 一律接受；仅在“非严格解析 + 明显错误文本”时触发重试。
+                if (not strict_json) and self._should_retry_response(vlm_response):
+                    last_error = parse_error or str(vlm_response)[:200]
+                    time.sleep(self.retry_backoff * (attempt + 1))
+                    continue
+                vlm_response_json = parsed_json
+                if DEBUG_LOGS and not strict_json:
+                    _debug_print(f"[WARN] Non-JSON response parsed with fallback: {parse_error}")
+                break
             if self._should_retry_response(vlm_response):
                 last_error = str(vlm_response)[:200]
                 time.sleep(self.retry_backoff * (attempt + 1))
                 continue
-
-            vlm_response_json = extract_data(vlm_response, "json")
-            try:
-                vlm_response_json = json.loads(vlm_response_json)
-                break
-            except json.JSONDecodeError as e:
-                last_error = f"JSON parse failed: {e}"
-                time.sleep(self.retry_backoff * (attempt + 1))
-                continue
+            last_error = parse_error or "JSON parse failed"
+            time.sleep(self.retry_backoff * (attempt + 1))
+            continue
         else:
             raise RuntimeError(f"LLM request failed after {self.retry_limit} attempts: {last_error}")
 
@@ -312,7 +539,8 @@ class VLMOrchestratedAgent:
 
         # construct the response so that anthropicExcutor can execute the tool
         response_content = [BetaTextBlock(text=vlm_plan_str, type='text')]
-        if 'box_centroid_coordinate' in vlm_response_json and vlm_response_json.get("Next Action") in (
+        next_action = vlm_response_json.get("Next Action", "None")
+        if 'box_centroid_coordinate' in vlm_response_json and next_action in (
             "left_click", "right_click", "double_click", "type", "hover"
         ):
             move_cursor_block = BetaToolUseBlock(id=f'toolu_{uuid.uuid4()}',
@@ -320,15 +548,15 @@ class VLMOrchestratedAgent:
                                             name='computer', type='tool_use')
             response_content.append(move_cursor_block)
 
-        if vlm_response_json["Next Action"] == "None":
+        if next_action == "None":
             # Task paused/completed.
             pass
-        elif vlm_response_json["Next Action"] == "type":
+        elif next_action == "type":
             sim_content_block = BetaToolUseBlock(id=f'toolu_{uuid.uuid4()}',
-                                        input={'action': "type", 'text': vlm_response_json["value"]},
+                                        input={'action': "type", 'text': vlm_response_json.get("value", "")},
                                         name='computer', type='tool_use')
             response_content.append(sim_content_block)
-        elif vlm_response_json["Next Action"] == "drag":
+        elif next_action == "drag":
             if drag_start_coordinate and drag_end_coordinate:
                 sim_content_block = BetaToolUseBlock(
                     id=f'toolu_{uuid.uuid4()}',
@@ -341,14 +569,14 @@ class VLMOrchestratedAgent:
                     type='tool_use'
                 )
                 response_content.append(sim_content_block)
-        elif vlm_response_json["Next Action"] == "key":
+        elif next_action == "key":
             sim_content_block = BetaToolUseBlock(id=f'toolu_{uuid.uuid4()}',
-                                        input={'action': vlm_response_json["Next Action"], 'text': vlm_response_json["value"]},
+                                        input={'action': next_action, 'text': vlm_response_json.get("value", "")},
                                         name='computer', type='tool_use')
             response_content.append(sim_content_block)
         else:
             sim_content_block = BetaToolUseBlock(id=f'toolu_{uuid.uuid4()}',
-                                            input={'action': vlm_response_json["Next Action"]},
+                                            input={'action': next_action},
                                             name='computer', type='tool_use')
             response_content.append(sim_content_block)
         response_message = BetaMessage(id=f'toolu_{uuid.uuid4()}', content=response_content, model='', role='assistant', type='message', stop_reason='tool_use', usage=BetaUsage(input_tokens=0, output_tokens=0))

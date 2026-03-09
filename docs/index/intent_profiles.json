@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "profiles": [
+    {
+      "id": "xhs_nurture",
+      "description": "小红书养号短指令扩展模板",
+      "required_tokens": [
+        "小红书",
+        "养号"
+      ],
+      "default_topic": "通用",
+      "topic_aliases": {
+        "开发相关": [
+          "开发",
+          "技术",
+          "程序",
+          "coding",
+          "研发",
+          "工程",
+          "ai",
+          "产品开发",
+          "openclaw"
+        ],
+        "养狗相关": [
+          "养狗",
+          "狗狗",
+          "宠物",
+          "训犬",
+          "犬"
+        ],
+        "教育相关": [
+          "教育",
+          "学习",
+          "教培",
+          "学生",
+          "老师",
+          "课程",
+          "备考",
+          "家庭教育"
+        ]
+      },
+      "flow_doc": "docs/flows/xhs_nurture_flow.md",
+      "strategy_doc": "docs/flows/flow_reference_guidelines.md",
+      "topic_anchor_required": true,
+      "continuous": true,
+      "continuous_max_cycles": 0,
+      "continuous_interval_sec": 90,
+      "publish_every_cycles": 6,
+      "publish_cooldown_sec": 10800,
+      "max_publish_per_session": 1,
+      "interaction_tasks": [
+        "先搜索“{topic}”并进入相关话题页/结果页，确认内容域已锚定",
+        "在推荐页围绕“{topic}”方向连续浏览 5-10 条内容，优先停留在高质量帖子",
+        "选择 2-4 条“{topic}”内容执行点赞和收藏，避免同作者连续操作",
+        "对 1-2 条“{topic}”内容写自然短评，避免模板化重复文案",
+        "在“{topic}”搜索结果中关注 1-2 个高质量账号",
+        "回到首页继续浏览“{topic}”内容，检查账号状态并记录可复用选题"
+      ],
+      "continuous_prompt_template": "继续下一轮小红书养号任务（{topic}）：先做主题锚定（搜索 {topic}），再进行浏览和互动；保持真人节奏，不做机械重复点击；如出现动作确认门，先按恢复链路处理。",
+      "task_template": "使用浏览器打开小红书，按 {flow_doc} 执行养号流程。方向：{topic}。先搜索并锚定到“{topic}”相关内容，再执行浏览/点赞/收藏/评论/关注；是否发布由系统节奏策略自动决定，禁止连续发布。全程遵循动作确认门。"
+    }
+  ]
+}

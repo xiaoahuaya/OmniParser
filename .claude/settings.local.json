@@ -2,7 +2,21 @@
   "permissions": {
     "allow": [
       "Bash(dir:*)",
-      "Bash(conda run:*)"
+      "Bash(conda run:*)",
+      "Bash(tree:*)",
+      "WebSearch",
+      "Bash(gh api:*)",
+      "Bash(gh repo view:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(xargs:*)",
+      "Bash(conda activate:*)",
+      "Bash(cmd /c \"cd /d F:\\\\ideacode\\\\UFO && conda activate OmniParser && pip install -r requirements.txt\")",
+      "Bash(cmd /c \"cd /d F:\\\\ideacode\\\\UFO && call conda activate OmniParser && pip install -r requirements.txt\")",
+      "Bash(cmd /c \"cd /d F:\\\\ideacode\\\\UFO && conda run -n OmniParser pip install -r requirements.txt\")",
+      "Bash(powershell -Command \"cd F:\\\\ideacode\\\\UFO; conda run -n OmniParser pip install -r requirements.txt 2>&1\")",
+      "Bash(powershell -Command \"conda run -n OmniParser python --version 2>&1\")",
+      "Bash(powershell -Command \"conda run -n OmniParser pip install ''pandas>=2.0,<3.0'' 2>&1 | Select-Object -Last 5\")",
+      "Bash(powershell -Command:*)"
     ],
     "deny": [],
     "ask": []

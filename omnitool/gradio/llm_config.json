@@ -5,7 +5,17 @@
       "base_url": "https://right.codes/codex/v1",
       "api_key": "sk-f4e34b7513a843ba8602a1ac178f3006",
       "default_model": "gpt-5.2",
-      "available_models": ["gpt-4o", "gpt-5.2-codex", "gpt-5.2", "gpt-5.1-codex-max", "gpt-5.1-codex", "gpt-5.1", "gpt-5-codex"]
+      "available_models": [
+        "gpt-5.4",
+        "gpt-5.3",
+        "gpt-4o",
+        "gpt-5.2-codex",
+        "gpt-5.2",
+        "gpt-5.1-codex-max",
+        "gpt-5.1-codex",
+        "gpt-5.1",
+        "gpt-5-codex"
+      ]
     },
     "claude_proxy": {
       "name": "Claude 中转",
