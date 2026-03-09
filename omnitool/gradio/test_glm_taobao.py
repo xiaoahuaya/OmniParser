@@ -3,6 +3,7 @@ GLM 模型淘宝测试脚本
 使用 OmniParser + GLM-4.5V 模型测试打开淘宝网站
 """
 import sys
+import os
 from pathlib import Path
 
 # 添加项目根目录到 Python 路径
@@ -25,7 +26,7 @@ class GLMTaobaoTester:
         self.model_name = model_name
         self.model = f"omniparser + {model_name}"
         self.provider = "zhipu"
-        self.api_key = "70931c95e7c24296a004b4288da87d79.6lNzdgSQgyLUrMvP"
+        self.api_key = os.getenv("ZHIPU_API_KEY", "")
         self.omniparser_server_url = omniparser_server_url
         self.messages = []
         self.only_n_most_recent_images = 2

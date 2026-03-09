@@ -1273,7 +1273,7 @@ def setup_state(state):
     if "anthropic_api_key" not in state:
         state["anthropic_api_key"] = os.getenv("ANTHROPIC_API_KEY", "")
     if "zhipu_api_key" not in state:
-        state["zhipu_api_key"] = "70931c95e7c24296a004b4288da87d79.6lNzdgSQgyLUrMvP"
+        state["zhipu_api_key"] = os.getenv("ZHIPU_API_KEY", "")
 
     if "api_key" not in state:
         state["api_key"] = default_provider.get("api_key", "")
