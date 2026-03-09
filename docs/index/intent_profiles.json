@@ -39,7 +39,7 @@
           "家庭教育"
         ]
       },
-      "flow_doc": "docs/flows/xhs_nurture_flow.md",
+      "flow_doc": "docs/flows/小红书_养号流程.md",
       "strategy_doc": "docs/flows/flow_reference_guidelines.md",
       "topic_anchor_required": true,
       "continuous": true,

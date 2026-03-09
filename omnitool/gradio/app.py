@@ -557,7 +557,7 @@ def _expand_task_from_profiles(task: str) -> tuple[str, str | None, dict]:
             continue
         expanded = template.format(
             topic=topic,
-            flow_doc=str(profile.get("flow_doc", "docs/flows/xhs_text_note_publish_flow.md")),
+            flow_doc=str(profile.get("flow_doc", "docs/flows/小红书_发布纯文本笔记流程.md")),
             strategy_doc=str(profile.get("strategy_doc", "docs/flows/flow_reference_guidelines.md")),
             original=raw_task,
         ).strip()
@@ -752,7 +752,7 @@ INTENT_FLOW_SOCKETS: dict[str, dict[str, object]] = {
             "nurture", "engage",
         ),
         "docs": (
-            "docs/flows/xhs_nurture_flow.md",
+            "docs/flows/小红书_养号流程.md",
             "docs/flows/flow_reference_guidelines.md",
             "docs/flows/vm134_quick_flow.md",
         ),
@@ -767,21 +767,22 @@ INTENT_FLOW_SOCKETS: dict[str, dict[str, object]] = {
             "publish", "post",
         ),
         "docs": (
-            "docs/flows/xhs_text_note_publish_flow.md",
+            "docs/flows/小红书_发布纯文本笔记流程.md",
             "docs/flows/flow_reference_guidelines.md",
             "docs/flows/vm134_quick_flow.md",
         ),
     },
     "dy_publish": {
-        "description": "抖音发布流程学习与总结",
+        "description": "抖音通用发布内容流程",
         "platform_tokens": (
             "抖音", "douyin", "iesdouyin",
         ),
         "action_tokens": (
-            "发布", "文章", "图文", "流程", "总结", "学习", "创作", "publish", "post",
+            "发布", "内容", "文案", "文章", "图文", "流程", "创作", "publish", "post",
         ),
         "docs": (
-            "docs/flows/douyin_publish_study_flow.md",
+            "docs/flows/抖音_发布内容索引.md",
+            "docs/flows/抖音_通用发布内容流程.md",
             "docs/flows/flow_reference_guidelines.md",
         ),
     },
@@ -794,7 +795,7 @@ INTENT_FLOW_SOCKETS: dict[str, dict[str, object]] = {
             "发布", "文章", "图文", "流程", "总结", "学习", "创作", "publish", "post",
         ),
         "docs": (
-            "docs/flows/kuaishou_publish_study_flow.md",
+            "docs/flows/快手_通用发布内容流程.md",
             "docs/flows/flow_reference_guidelines.md",
         ),
     },
@@ -970,6 +971,86 @@ def _build_flow_reference_message(task: str) -> tuple[str | None, list[str], str
     loaded_docs = [p for p in used_paths if p != index_display]
     status_lines.append("加载文档: " + ("; ".join(loaded_docs) if loaded_docs else "无"))
     return guidance, used_paths, "\n".join(status_lines)
+
+
+def _is_path_within(base_dir: Path, target: Path) -> bool:
+    try:
+        target.resolve().relative_to(base_dir.resolve())
+        return True
+    except Exception:
+        return False
+
+
+def _list_manageable_flow_docs() -> list[str]:
+    candidates: list[Path] = [
+        FLOW_INDEX_PATH,
+        INTENT_PROFILE_PATH,
+        TOPIC_CATALOG_PATH,
+        FLOW_GUIDELINE_PATH,
+    ]
+    if FLOW_DOCS_DIR.exists():
+        for path_obj in sorted(FLOW_DOCS_DIR.glob("*.md"), key=lambda p: p.name.lower()):
+            candidates.append(path_obj)
+
+    unique_paths: list[Path] = []
+    seen: set[str] = set()
+    for path_obj in candidates:
+        resolved = _resolve_doc_path(str(path_obj))
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        if _is_path_within(DOCS_ROOT, resolved):
+            unique_paths.append(resolved)
+    return [_display_doc_path(path_obj) for path_obj in unique_paths]
+
+
+def _resolve_manageable_doc(path_text: str) -> Path | None:
+    if not str(path_text or "").strip():
+        return None
+    candidate = _resolve_doc_path(path_text)
+    if not _is_path_within(DOCS_ROOT, candidate):
+        return None
+    return candidate
+
+
+def _refresh_flow_doc_editor(selected_doc: str):
+    doc_choices = _list_manageable_flow_docs()
+    if not doc_choices:
+        return gr.update(choices=[], value=None), "❌ 未找到可管理文档。"
+
+    selected = str(selected_doc or "").strip()
+    if selected not in doc_choices:
+        selected = doc_choices[0]
+    return gr.update(choices=doc_choices, value=selected), f"📚 可管理文档已刷新（{len(doc_choices)} 项）。"
+
+
+def _load_flow_doc_editor(selected_doc: str):
+    selected = str(selected_doc or "").strip()
+    path_obj = _resolve_manageable_doc(selected)
+    if not path_obj:
+        return "", "❌ 文档路径非法或不在 docs 目录下。"
+
+    if not path_obj.exists():
+        return "", f"⚠️ 文档不存在：{_display_doc_path(path_obj)}"
+    try:
+        content = path_obj.read_text(encoding="utf-8")
+        return content, f"✅ 已加载：{_display_doc_path(path_obj)}"
+    except Exception as e:
+        return "", f"❌ 加载失败：{_display_doc_path(path_obj)} | {e}"
+
+
+def _save_flow_doc_editor(selected_doc: str, content: str):
+    selected = str(selected_doc or "").strip()
+    path_obj = _resolve_manageable_doc(selected)
+    if not path_obj:
+        return "❌ 保存失败：文档路径非法或不在 docs 目录下。"
+    try:
+        path_obj.parent.mkdir(parents=True, exist_ok=True)
+        path_obj.write_text(str(content or ""), encoding="utf-8")
+        return f"✅ 已保存：{_display_doc_path(path_obj)}（{len(str(content or ''))} 字符）"
+    except Exception as e:
+        return f"❌ 保存失败：{_display_doc_path(path_obj)} | {e}"
 
 def get_proxy_choices():
     """获取中转 provider 选项"""
@@ -2593,6 +2674,15 @@ def _compose_task_input(
             "先搜索主题，再执行自然浏览、点赞、收藏、评论。"
         )
         return composed, f"任务类型=浏览互动 | 平台={platform_label} | 主题={topic_text} | 来源={topic_from}"
+    if task_type in {"抖音发布内容", "抖音发布学习"}:
+        topic_text = topic or "通用发布内容"
+        composed = (
+            f"打开抖音执行通用发布内容任务（{topic_text}）{topic_segment}。"
+            "第一步必须进入 https://www.douyin.com 并定位“投稿/创作者中心/发布”入口；"
+            "进入编辑页后完成发布前校验：标题与正文非空，话题/封面按需设置；"
+            "校验通过后执行发布，并确认“发布成功”提示或发布后状态变化。"
+        )
+        return composed, f"任务类型=抖音发布内容 | 平台=抖音 | 主题={topic_text} | 来源={topic_from}"
     if task_type == "总结":
         topic_text = topic or "当前任务"
         composed = f"总结 {topic_text} 相关的今日进展与风险{topic_segment}。"
@@ -3027,12 +3117,14 @@ with gr.Blocks(theme=gr.themes.Default()) as demo:
     topic_catalog = _load_topic_catalog(TOPIC_CATALOG_PATH)
     topic_choices = [str(item.get("label", "")).strip() for item in topic_catalog if str(item.get("label", "")).strip()]
     default_topic = topic_choices[0] if topic_choices else "openclaw"
+    flow_doc_choices = _list_manageable_flow_docs()
+    default_flow_doc = flow_doc_choices[0] if flow_doc_choices else ""
 
     with gr.Row():
         with gr.Column(scale=2):
             task_type = gr.Dropdown(
                 label="任务类型",
-                choices=["自动识别", "小红书养号", "小红书发布", "浏览互动", "总结"],
+                choices=["自动识别", "小红书养号", "小红书发布", "抖音发布内容", "浏览互动", "总结"],
                 value="自动识别",
                 interactive=True,
             )
@@ -3135,6 +3227,28 @@ with gr.Blocks(theme=gr.themes.Default()) as demo:
                         gr.Markdown(f"**Node{idx}** `{host}`")
                         monitor_grid_view = gr.HTML(value="", container=False, elem_classes="no-padding")
                         monitor_grid_view_components.append(monitor_grid_view)
+
+        with gr.Tab("流程内容管理"):
+            gr.Markdown("### 前台管理流程索引与指导文档")
+            with gr.Row():
+                flow_doc_selector = gr.Dropdown(
+                    label="文档选择",
+                    choices=flow_doc_choices,
+                    value=default_flow_doc or None,
+                    interactive=True,
+                )
+                flow_doc_refresh_btn = gr.Button("刷新文档列表", variant="secondary")
+            flow_doc_editor = gr.Textbox(
+                label="文档内容",
+                lines=20,
+                max_lines=28,
+                placeholder="选择文档后点击“加载文档内容”",
+                interactive=True,
+            )
+            with gr.Row():
+                flow_doc_load_btn = gr.Button("加载文档内容", variant="secondary")
+                flow_doc_save_btn = gr.Button("保存文档内容", variant="primary")
+            flow_doc_status = gr.Markdown("ℹ️ 可在前台维护 docs/index 与 docs/flows 下的流程文档。")
 
     def update_proxy_provider(proxy_provider_value, state):
         """切换中转 provider 时更新配置"""
@@ -3282,6 +3396,26 @@ with gr.Blocks(theme=gr.themes.Default()) as demo:
         fn=update_topic_source,
         inputs=[topic_source],
         outputs=[preset_topic, manual_topic],
+    )
+    flow_doc_refresh_btn.click(
+        fn=_refresh_flow_doc_editor,
+        inputs=[flow_doc_selector],
+        outputs=[flow_doc_selector, flow_doc_status],
+    )
+    flow_doc_load_btn.click(
+        fn=_load_flow_doc_editor,
+        inputs=[flow_doc_selector],
+        outputs=[flow_doc_editor, flow_doc_status],
+    )
+    flow_doc_selector.change(
+        fn=_load_flow_doc_editor,
+        inputs=[flow_doc_selector],
+        outputs=[flow_doc_editor, flow_doc_status],
+    )
+    flow_doc_save_btn.click(
+        fn=_save_flow_doc_editor,
+        inputs=[flow_doc_selector, flow_doc_editor],
+        outputs=[flow_doc_status],
     )
     chatbot.clear(
         fn=clear_node_chat,
