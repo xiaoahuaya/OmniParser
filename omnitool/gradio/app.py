@@ -596,7 +596,12 @@ def _load_flow_index_entries(index_path: Path = FLOW_INDEX_PATH) -> list[dict]:
     return entries
 
 
-def _match_flow_index_entries(task: str, entries: list[dict], limit: int = 3) -> list[dict]:
+def _match_flow_index_entries(
+    task: str,
+    entries: list[dict],
+    limit: int = 3,
+    platform_target: str | None = None,
+) -> list[dict]:
     task_text = (task or "").strip().lower()
     if not task_text or not entries:
         return []
@@ -609,7 +614,10 @@ def _match_flow_index_entries(task: str, entries: list[dict], limit: int = 3) ->
             continue
         # Hits + tie breaker for longer keyword matches.
         score = len(hits) * 10 + sum(len(h) for h in hits)
-        scored.append((score, {**entry, "hits": hits}))
+        enriched = {**entry, "hits": hits}
+        if platform_target and (not _entry_matches_platform(enriched, platform_target)):
+            continue
+        scored.append((score, enriched))
 
     scored.sort(key=lambda item: (-item[0], item[1].get("id", "")))
     return [item[1] for item in scored[:limit]]
@@ -623,6 +631,95 @@ def _resolve_docs_from_index_matches(index_matches: list[dict]) -> list[Path]:
             if path_obj.exists():
                 resolved.append(path_obj)
     return resolved
+
+
+PLATFORM_TARGETS: dict[str, dict[str, object]] = {
+    "xiaohongshu": {
+        "label": "小红书",
+        "url": "https://www.xiaohongshu.com",
+        "tokens": ("小红书", "xiaohongshu", "xhs", "红书"),
+    },
+    "douyin": {
+        "label": "抖音",
+        "url": "https://www.douyin.com",
+        "tokens": ("抖音", "douyin", "iesdouyin"),
+    },
+    "kuaishou": {
+        "label": "快手",
+        "url": "https://www.kuaishou.com",
+        "tokens": ("快手", "kuaishou", "kwai"),
+    },
+}
+
+
+def _detect_platform_target(task: str) -> str | None:
+    task_text = (task or "").strip().lower()
+    if not task_text:
+        return None
+
+    explicit = re.search(
+        r"(?:目标平台|platform)\s*[:：=]\s*(抖音|快手|小红书|douyin|kuaishou|kwai|xiaohongshu|xhs)",
+        task_text,
+        flags=re.IGNORECASE,
+    )
+    if explicit:
+        value = str(explicit.group(1)).lower()
+        if value in {"抖音", "douyin"}:
+            return "douyin"
+        if value in {"快手", "kuaishou", "kwai"}:
+            return "kuaishou"
+        if value in {"小红书", "xiaohongshu", "xhs"}:
+            return "xiaohongshu"
+
+    best_key = None
+    best_score = 0
+    for key, cfg in PLATFORM_TARGETS.items():
+        tokens = cfg.get("tokens", ())
+        score = sum(1 for token in tokens if str(token).lower() in task_text)
+        if score > best_score:
+            best_score = score
+            best_key = key
+    return best_key if best_score > 0 else None
+
+
+def _entry_matches_platform(entry: dict, platform_target: str | None) -> bool:
+    if not platform_target:
+        return True
+    if platform_target == "xiaohongshu":
+        return True
+
+    target_tokens = tuple(str(x).lower() for x in PLATFORM_TARGETS.get(platform_target, {}).get("tokens", ()))
+    xhs_tokens = tuple(str(x).lower() for x in PLATFORM_TARGETS.get("xiaohongshu", {}).get("tokens", ()))
+
+    merged = " ".join(
+        [
+            str(entry.get("id", "")),
+            str(entry.get("description", "")),
+            " ".join(str(x) for x in (entry.get("keywords") or [])),
+            " ".join(str(x) for x in (entry.get("hits") or [])),
+            " ".join(str(x) for x in (entry.get("docs") or [])),
+        ]
+    ).lower()
+
+    has_target = any(token in merged for token in target_tokens)
+    has_xhs = any(token in merged for token in xhs_tokens)
+    if has_target:
+        return True
+    if has_xhs:
+        return False
+    return True
+
+
+def _is_xhs_doc_path(path_obj: Path) -> bool:
+    name = path_obj.name.lower()
+    text = str(path_obj).lower()
+    return ("xhs_" in name) or ("xiaohongshu" in text) or ("xhs_text_note" in name) or ("xhs_nurture" in name)
+
+
+def _doc_matches_platform(path_obj: Path, platform_target: str | None) -> bool:
+    if not platform_target or platform_target == "xiaohongshu":
+        return True
+    return not _is_xhs_doc_path(path_obj)
 
 
 INTENT_FLOW_SOCKETS: dict[str, dict[str, object]] = {
@@ -654,6 +751,32 @@ INTENT_FLOW_SOCKETS: dict[str, dict[str, object]] = {
             "docs/flows/xhs_text_note_publish_flow.md",
             "docs/flows/flow_reference_guidelines.md",
             "docs/flows/vm134_quick_flow.md",
+        ),
+    },
+    "dy_publish": {
+        "description": "抖音发布流程学习与总结",
+        "platform_tokens": (
+            "抖音", "douyin", "iesdouyin",
+        ),
+        "action_tokens": (
+            "发布", "文章", "图文", "流程", "总结", "学习", "创作", "publish", "post",
+        ),
+        "docs": (
+            "docs/flows/douyin_publish_study_flow.md",
+            "docs/flows/flow_reference_guidelines.md",
+        ),
+    },
+    "ks_publish": {
+        "description": "快手发布流程学习与总结",
+        "platform_tokens": (
+            "快手", "kuaishou", "kwai",
+        ),
+        "action_tokens": (
+            "发布", "文章", "图文", "流程", "总结", "学习", "创作", "publish", "post",
+        ),
+        "docs": (
+            "docs/flows/kuaishou_publish_study_flow.md",
+            "docs/flows/flow_reference_guidelines.md",
         ),
     },
 }
@@ -730,13 +853,20 @@ def _find_matching_flow_docs(task: str, docs_dir: Path = FLOW_DOCS_DIR) -> list[
 
 
 def _build_flow_reference_message(task: str) -> tuple[str | None, list[str], str]:
+    platform_target = _detect_platform_target(task)
+    platform_label = str(PLATFORM_TARGETS.get(platform_target, {}).get("label", "")) if platform_target else ""
+
     index_entries = _load_flow_index_entries(FLOW_INDEX_PATH)
-    index_matches = _match_flow_index_entries(task, index_entries)
+    index_matches = _match_flow_index_entries(task, index_entries, platform_target=platform_target)
     index_docs = _resolve_docs_from_index_matches(index_matches)
 
     task_intent = _detect_task_intent(task)
+    if platform_target and platform_target != "xiaohongshu" and task_intent and task_intent.startswith("xhs_"):
+        task_intent = None
     intent_docs = _resolve_intent_docs(task_intent)
     matched = index_docs + intent_docs + _find_matching_flow_docs(task)
+    if platform_target and platform_target != "xiaohongshu":
+        matched = [p for p in matched if _doc_matches_platform(p, platform_target)]
     guideline = FLOW_GUIDELINE_PATH
     if guideline.exists():
         matched = [guideline] + matched
@@ -749,6 +879,8 @@ def _build_flow_reference_message(task: str) -> tuple[str | None, list[str], str
         "📚 文档预读检查",
         f"索引: {index_display} ({index_state})",
     ]
+    if platform_label:
+        status_lines.append(f"平台判定: {platform_label}")
     if index_hit_ids:
         status_lines.append("命中条目: " + ", ".join(index_hit_ids))
 
@@ -798,10 +930,20 @@ def _build_flow_reference_message(task: str) -> tuple[str | None, list[str], str
         else:
             index_tip = f"已检查索引文档：{index_display}，未命中专用条目，使用通用流程文档。\n"
 
+    platform_tip = ""
+    if platform_target and platform_target != "xiaohongshu":
+        platform_url = str(PLATFORM_TARGETS.get(platform_target, {}).get("url", "") or "")
+        if platform_label and platform_url:
+            platform_tip = (
+                f"平台硬约束：目标平台为{platform_label}，第一步必须先打开 {platform_url}。"
+                "禁止沿用小红书创作页上下文。\n"
+            )
+
     guidance = (
         "默认第1步：先检查并预读流程文档，再执行UI动作。\n"
         + index_tip
         + intent_tip
+        + platform_tip
         + "以下为本任务命中文档摘要，请优先遵循：\n"
         + "\n".join(snippets)
         + "\n若文档与页面不一致，先执行文档中的恢复/校验步骤，再继续下一步。"
@@ -2862,11 +3004,23 @@ def _compose_task_input(
         topic = _normalize_topic_text(preset_topic)
         topic_from = "预设主题" if topic else "无"
 
+    detected_platform = _detect_platform_target(raw) if raw else None
+    platform_label = str(PLATFORM_TARGETS.get(detected_platform, {}).get("label", "未识别")) if detected_platform else "未识别"
+
     # 手动输入任务优先，其次按预制模板自动生成任务。
     if raw:
+        if task_type == "自动识别" and detected_platform in {"douyin", "kuaishou"}:
+            platform_url = str(PLATFORM_TARGETS.get(detected_platform, {}).get("url", "") or "")
+            if platform_url and platform_url.lower() not in raw.lower():
+                raw = (
+                    raw
+                    + f"\n硬约束：目标平台={platform_label}。"
+                      f"第一步必须使用 Ctrl+L 打开 {platform_url} 并回车。"
+                      "禁止进入小红书相关页面（xiaohongshu.com / creator.xiaohongshu.com）。"
+                )
         if topic and topic.lower() not in raw.lower():
             raw = raw + f" | 方向: {topic} | topic:{topic}"
-        return raw, f"任务类型={task_type} | 主题={topic or '未指定'} | 来源={topic_from}"
+        return raw, f"任务类型={task_type} | 平台={platform_label} | 主题={topic or '未指定'} | 来源={topic_from}"
 
     topic_segment = f" topic:{topic}" if topic else ""
     if task_type == "小红书养号":
@@ -2875,26 +3029,26 @@ def _compose_task_input(
             f"小红书养号 {topic_text} 相关{topic_segment}。"
             f"先搜索“{topic_text}”并进入相关内容后再互动。"
         )
-        return composed, f"任务类型=小红书养号 | 主题={topic_text} | 来源={topic_from}"
+        return composed, f"任务类型=小红书养号 | 平台=小红书 | 主题={topic_text} | 来源={topic_from}"
     if task_type == "小红书发布":
         topic_text = topic or "项目进度"
         composed = (
             f"小红书发布纯文本笔记 {topic_text} 相关{topic_segment}。"
             "标题与正文非空后再发布。"
         )
-        return composed, f"任务类型=小红书发布 | 主题={topic_text} | 来源={topic_from}"
+        return composed, f"任务类型=小红书发布 | 平台=小红书 | 主题={topic_text} | 来源={topic_from}"
     if task_type == "浏览互动":
         topic_text = topic or "通用"
         composed = (
             f"使用浏览器执行浏览互动任务，主题为 {topic_text}{topic_segment}。"
             "先搜索主题，再执行自然浏览、点赞、收藏、评论。"
         )
-        return composed, f"任务类型=浏览互动 | 主题={topic_text} | 来源={topic_from}"
+        return composed, f"任务类型=浏览互动 | 平台={platform_label} | 主题={topic_text} | 来源={topic_from}"
     if task_type == "总结":
         topic_text = topic or "当前任务"
         composed = f"总结 {topic_text} 相关的今日进展与风险{topic_segment}。"
-        return composed, f"任务类型=总结 | 主题={topic_text} | 来源={topic_from}"
-    return raw, f"任务类型=自动识别 | 主题={topic or '未指定'} | 来源={topic_from}"
+        return composed, f"任务类型=总结 | 平台={platform_label} | 主题={topic_text} | 来源={topic_from}"
+    return raw, f"任务类型=自动识别 | 平台={platform_label} | 主题={topic or '未指定'} | 来源={topic_from}"
 
 
 def _start_background_task_single(user_input, state, node_id: str) -> tuple[bool, str]:
