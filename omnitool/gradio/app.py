@@ -42,6 +42,21 @@ from agent.llm_utils.groqclient import run_groq_interleaved
 import requests
 from requests.exceptions import RequestException
 import base64
+from task_policy import (
+    build_next_cycle_prompt as _build_next_cycle_prompt_locked,
+    decide_next_cycle_strategy as _decide_next_cycle_strategy_locked,
+    detect_publish_success as _detect_publish_success_locked,
+    is_publish_task as _is_publish_task_locked,
+    plan_is_incomplete as _plan_is_incomplete_locked,
+)
+from task_state_store import (
+    apply_loaded_task_state,
+    build_new_task_state,
+    read_task_state,
+    reset_task_state_fields,
+    save_task_state,
+)
+from runtime_log_monitor import RuntimeLogMonitor
 
 
 def _ensure_localhost_no_proxy():
@@ -97,8 +112,12 @@ BACKEND_LOG_MODE = str(os.getenv("OMNITOOL_BACKEND_LOG_MODE", "compact") or "com
 BACKEND_LOG_TEXT_MAX = max(80, int(os.getenv("OMNITOOL_BACKEND_LOG_TEXT_MAX", "220")))
 BACKEND_LOG_STEP_HEARTBEAT_EVERY = max(0, int(os.getenv("OMNITOOL_BACKEND_LOG_STEP_HEARTBEAT_EVERY", "8")))
 BACKEND_LOG_SUMMARY_INTERVAL_SEC = max(8.0, float(os.getenv("OMNITOOL_BACKEND_LOG_SUMMARY_INTERVAL_SEC", "25")))
-RUNTIME_MONITOR_LOCK = threading.Lock()
-RUNTIME_MONITOR: dict[str, dict] = {}
+RUNTIME_LOG_MONITOR = RuntimeLogMonitor(
+    debug_logs=DEBUG_LOGS,
+    backend_log_mode=BACKEND_LOG_MODE,
+    text_max=BACKEND_LOG_TEXT_MAX,
+    summary_interval_sec=BACKEND_LOG_SUMMARY_INTERVAL_SEC,
+)
 
 def _serialize_content_item(item):
     if isinstance(item, (TextBlock, BetaTextBlock)):
@@ -1034,195 +1053,43 @@ DEFAULT_NODE_ID = NODE_IDS[0] if NODE_IDS else "local"
 
 
 def _new_task_state(node_id: str, windows_host_url: str) -> dict:
-    return {
-        "node_id": node_id,
-        "windows_host_url": windows_host_url,
-        "status": "idle",
-        "phase": "idle",
-        "task_type": "自动识别",
-        "profile_id": "",
-        "profile_topic": "",
-        "continuous_mode": False,
-        "continuous_cycle": 0,
-        "continuous_max_cycles": 1,
-        "continuous_interval_sec": 0.0,
-        "continuous_prompt": "",
-        "publish_every_cycles": 4,
-        "publish_cooldown_sec": 1800.0,
-        "max_publish_per_session": 2,
-        "publish_count": 0,
-        "last_publish_ts": None,
-        "interaction_tasks": [],
-        "interaction_task_index": 0,
-        "topic_anchor_required": False,
-        "topic_anchor_done": False,
-        "topic_anchor_input_hit": False,
-        "topic_anchor_results_hit": False,
-        "failover_budget": AUTO_PROXY_FAILOVER_MAX_SWITCHES,
-        "failover_switches": 0,
-        "run_attempt": 0,
-        "consecutive_failures": 0,
-        "next_retry_at": None,
-        "health": "unknown",
-        "health_detail": "",
-        "health_last_checked": None,
-        "messages": [],
-        "responses": {},
-        "tools": {},
-        "chatbot_messages": [],
-        "stop": False,
-        "last_error": None,
-        "last_update": None,
-        "model": None,
-        "provider": None,
-        "api_key": None,
-        "proxy_base_url": None,
-        "proxy_model": None,
-        "only_n_most_recent_images": 2,
-        "max_steps": None,
-        "max_seconds": None,
-        "goal_task": "",
-        "auto_replan_budget": AUTO_REPLAN_MAX_ROUNDS,
-        "auto_replan_used": 0,
-        "stagnation_rounds": 0,
-        "auto_recover_budget": AUTO_RECOVER_MAX_CYCLES,
-        "auto_recover_used": 0,
-        "plan": None,
-        "plan_steps": None,
-        "plan_step_index": 0,
-    }
-
-
-def _task_state_path(node_id: str) -> Path:
-    return Path(f"./tmp/task_state_{node_id}.json")
+    return build_new_task_state(
+        node_id=node_id,
+        windows_host_url=windows_host_url,
+        auto_proxy_failover_max_switches=AUTO_PROXY_FAILOVER_MAX_SWITCHES,
+        auto_replan_max_rounds=AUTO_REPLAN_MAX_ROUNDS,
+        auto_recover_max_cycles=AUTO_RECOVER_MAX_CYCLES,
+    )
 
 
 def _save_node_task_state(node_id: str):
     state = NODE_TASK_STATES[node_id]
-    path = _task_state_path(node_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = {
-        "version": TASK_STATE_VERSION,
-        "status": state.get("status"),
-        "phase": state.get("phase", "idle"),
-        "task_type": state.get("task_type", "自动识别"),
-        "profile_id": state.get("profile_id", ""),
-        "profile_topic": state.get("profile_topic", ""),
-        "continuous_mode": state.get("continuous_mode", False),
-        "continuous_cycle": state.get("continuous_cycle", 0),
-        "continuous_max_cycles": state.get("continuous_max_cycles", 1),
-        "continuous_interval_sec": state.get("continuous_interval_sec", 0.0),
-        "continuous_prompt": state.get("continuous_prompt", ""),
-        "publish_every_cycles": state.get("publish_every_cycles", 4),
-        "publish_cooldown_sec": state.get("publish_cooldown_sec", 1800.0),
-        "max_publish_per_session": state.get("max_publish_per_session", 2),
-        "publish_count": state.get("publish_count", 0),
-        "last_publish_ts": state.get("last_publish_ts"),
-        "interaction_tasks": state.get("interaction_tasks", []),
-        "interaction_task_index": state.get("interaction_task_index", 0),
-        "topic_anchor_required": state.get("topic_anchor_required", False),
-        "topic_anchor_done": state.get("topic_anchor_done", False),
-        "topic_anchor_input_hit": state.get("topic_anchor_input_hit", False),
-        "topic_anchor_results_hit": state.get("topic_anchor_results_hit", False),
-        "failover_budget": state.get("failover_budget", AUTO_PROXY_FAILOVER_MAX_SWITCHES),
-        "failover_switches": state.get("failover_switches", 0),
-        "run_attempt": state.get("run_attempt", 0),
-        "consecutive_failures": state.get("consecutive_failures", 0),
-        "next_retry_at": state.get("next_retry_at"),
-        "health": state.get("health", "unknown"),
-        "health_detail": state.get("health_detail", ""),
-        "health_last_checked": state.get("health_last_checked"),
-        "messages": _serialize_messages(state.get("messages", [])),
-        "chatbot_messages": state.get("chatbot_messages", []),
-        "last_error": state.get("last_error"),
-        "last_update": state.get("last_update"),
-        "model": state.get("model"),
-        "provider": state.get("provider"),
-        "api_key": state.get("api_key"),
-        "proxy_base_url": state.get("proxy_base_url"),
-        "proxy_model": state.get("proxy_model"),
-        "only_n_most_recent_images": state.get("only_n_most_recent_images"),
-        "max_steps": state.get("max_steps"),
-        "max_seconds": state.get("max_seconds"),
-        "goal_task": state.get("goal_task", ""),
-        "auto_replan_budget": state.get("auto_replan_budget", AUTO_REPLAN_MAX_ROUNDS),
-        "auto_replan_used": state.get("auto_replan_used", 0),
-        "stagnation_rounds": state.get("stagnation_rounds", 0),
-        "auto_recover_budget": state.get("auto_recover_budget", AUTO_RECOVER_MAX_CYCLES),
-        "auto_recover_used": state.get("auto_recover_used", 0),
-        "plan": state.get("plan"),
-        "plan_steps": state.get("plan_steps"),
-        "plan_step_index": state.get("plan_step_index"),
-        "windows_host_url": state.get("windows_host_url"),
-    }
-    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    save_task_state(
+        node_id=node_id,
+        state=state,
+        version=TASK_STATE_VERSION,
+        serialize_messages=_serialize_messages,
+        auto_proxy_failover_max_switches=AUTO_PROXY_FAILOVER_MAX_SWITCHES,
+        auto_replan_max_rounds=AUTO_REPLAN_MAX_ROUNDS,
+        auto_recover_max_cycles=AUTO_RECOVER_MAX_CYCLES,
+    )
 
 
 def _load_node_task_state(node_id: str):
-    path = _task_state_path(node_id)
-    if not path.exists():
+    data = read_task_state(node_id)
+    if data is None:
         return
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return
-    status = data.get("status", "idle")
-    if status in ("running", "starting", "stopping"):
-        status = "interrupted"
+
     state = NODE_TASK_STATES[node_id]
-    state.update(
-        {
-            "status": status,
-            "phase": data.get("phase", "idle"),
-            "task_type": str(data.get("task_type", "自动识别") or "自动识别"),
-            "profile_id": str(data.get("profile_id", "") or ""),
-            "profile_topic": str(data.get("profile_topic", "") or ""),
-            "continuous_mode": bool(data.get("continuous_mode", False)),
-            "continuous_cycle": _as_int(data.get("continuous_cycle", 0), 0),
-            "continuous_max_cycles": _as_int(data.get("continuous_max_cycles", 1), 1),
-            "continuous_interval_sec": _as_float(data.get("continuous_interval_sec", 0.0), 0.0),
-            "continuous_prompt": str(data.get("continuous_prompt", "") or ""),
-            "publish_every_cycles": _as_int(data.get("publish_every_cycles", 4), 4),
-            "publish_cooldown_sec": _as_float(data.get("publish_cooldown_sec", 1800.0), 1800.0),
-            "max_publish_per_session": _as_int(data.get("max_publish_per_session", 2), 2),
-            "publish_count": _as_int(data.get("publish_count", 0), 0),
-            "last_publish_ts": data.get("last_publish_ts"),
-            "interaction_tasks": data.get("interaction_tasks", []),
-            "interaction_task_index": _as_int(data.get("interaction_task_index", 0), 0),
-            "topic_anchor_required": bool(data.get("topic_anchor_required", False)),
-            "topic_anchor_done": bool(data.get("topic_anchor_done", False)),
-            "topic_anchor_input_hit": bool(data.get("topic_anchor_input_hit", False)),
-            "topic_anchor_results_hit": bool(data.get("topic_anchor_results_hit", False)),
-            "failover_budget": _as_int(data.get("failover_budget", AUTO_PROXY_FAILOVER_MAX_SWITCHES), AUTO_PROXY_FAILOVER_MAX_SWITCHES),
-            "failover_switches": _as_int(data.get("failover_switches", 0), 0),
-            "run_attempt": data.get("run_attempt", 0),
-            "consecutive_failures": data.get("consecutive_failures", 0),
-            "next_retry_at": data.get("next_retry_at"),
-            "health": data.get("health", "unknown"),
-            "health_detail": data.get("health_detail", ""),
-            "health_last_checked": data.get("health_last_checked"),
-            "messages": _deserialize_messages(data.get("messages", [])),
-            "chatbot_messages": data.get("chatbot_messages", []),
-            "last_error": data.get("last_error"),
-            "last_update": data.get("last_update"),
-            "model": data.get("model"),
-            "provider": data.get("provider"),
-            "api_key": data.get("api_key"),
-            "proxy_base_url": data.get("proxy_base_url"),
-            "proxy_model": data.get("proxy_model"),
-            "only_n_most_recent_images": data.get("only_n_most_recent_images", 2),
-            "max_steps": data.get("max_steps"),
-            "max_seconds": data.get("max_seconds"),
-            "goal_task": str(data.get("goal_task", "") or ""),
-            "auto_replan_budget": _as_int(data.get("auto_replan_budget", AUTO_REPLAN_MAX_ROUNDS), AUTO_REPLAN_MAX_ROUNDS),
-            "auto_replan_used": _as_int(data.get("auto_replan_used", 0), 0),
-            "stagnation_rounds": _as_int(data.get("stagnation_rounds", 0), 0),
-            "auto_recover_budget": _as_int(data.get("auto_recover_budget", AUTO_RECOVER_MAX_CYCLES), AUTO_RECOVER_MAX_CYCLES),
-            "auto_recover_used": _as_int(data.get("auto_recover_used", 0), 0),
-            "plan": data.get("plan"),
-            "plan_steps": data.get("plan_steps"),
-            "plan_step_index": _as_int(data.get("plan_step_index", 0), 0),
-        }
+    apply_loaded_task_state(
+        state=state,
+        data=data,
+        deserialize_messages=_deserialize_messages,
+        as_int=_as_int,
+        as_float=_as_float,
+        auto_proxy_failover_max_switches=AUTO_PROXY_FAILOVER_MAX_SWITCHES,
+        auto_replan_max_rounds=AUTO_REPLAN_MAX_ROUNDS,
+        auto_recover_max_cycles=AUTO_RECOVER_MAX_CYCLES,
     )
 
 
@@ -1531,12 +1398,6 @@ TRANSIENT_ERROR_KEYWORDS = (
     "连接超时",
     "连接被拒绝",
 )
-PUBLISH_SUCCESS_PATTERNS = (
-    "发布成功",
-    "已发布",
-    "发布完成",
-    "发布后状态确认",
-)
 ERROR_AUTO_RESET_COOLDOWN_SEC = float(os.getenv("OMNITOOL_ERROR_AUTO_RESET_COOLDOWN_SEC", "8"))
 HEALTH_ICONS = {
     "healthy": "🟢",
@@ -1544,177 +1405,6 @@ HEALTH_ICONS = {
     "offline": "🔴",
     "unknown": "⚪",
 }
-
-
-def _chat_entry_text(entry) -> str:
-    if isinstance(entry, str):
-        return entry
-    if isinstance(entry, (tuple, list)):
-        parts: list[str] = []
-        for part in entry:
-            if isinstance(part, str) and part.strip():
-                parts.append(part)
-        return "\n".join(parts).strip()
-    return ""
-
-
-def _collect_chat_text_since_locked(state: dict, start_index: int, max_items: int = 120) -> str:
-    entries = state.get("chatbot_messages") or []
-    if not isinstance(entries, list):
-        return ""
-    safe_index = max(0, int(start_index))
-    slice_items = entries[safe_index:]
-    if max_items > 0:
-        slice_items = slice_items[-max_items:]
-    parts: list[str] = []
-    for item in slice_items:
-        text = _chat_entry_text(item)
-        if text:
-            parts.append(text)
-    return "\n".join(parts).lower()
-
-
-def _detect_publish_success_locked(state: dict, start_index: int) -> bool:
-    text = _collect_chat_text_since_locked(state, start_index=start_index, max_items=160)
-    return any(pattern in text for pattern in PUBLISH_SUCCESS_PATTERNS)
-
-
-def _is_publish_task_locked(state: dict) -> bool:
-    task_type = str(state.get("task_type") or "").strip()
-    profile_id = str(state.get("profile_id") or "").strip().lower()
-    goal_task = str(state.get("goal_task") or "").strip().lower()
-
-    if task_type == "小红书发布":
-        return True
-    if profile_id in {"xhs_publish"} or profile_id.endswith("_publish"):
-        return True
-
-    publish_markers = (
-        "小红书发布",
-        "发布纯文本笔记",
-        "标题与正文非空后再发布",
-        "creator.xiaohongshu.com/publish",
-        "发布笔记",
-    )
-    return any(marker in goal_task for marker in publish_markers)
-
-
-def _consume_interaction_task_locked(state: dict) -> str:
-    tasks = state.get("interaction_tasks") or []
-    topic = str(state.get("profile_topic") or "通用")
-    if not isinstance(tasks, list) or not tasks:
-        return f"围绕“{topic}”方向自然浏览推荐内容，并完成点赞/收藏/评论/关注中的 2-4 项互动"
-
-    index = int(state.get("interaction_task_index") or 0)
-    task = str(tasks[index % len(tasks)]).strip()
-    state["interaction_task_index"] = (index + 1) % len(tasks)
-    try:
-        return task.format(topic=topic)
-    except Exception:
-        return task
-
-
-def _decide_next_cycle_strategy_locked(state: dict, next_cycle: int, now_ts: float) -> dict:
-    blocked_reasons: list[str] = []
-
-    publish_every = max(1, int(state.get("publish_every_cycles") or 1))
-    if publish_every > 1 and next_cycle % publish_every != 0:
-        blocked_reasons.append(f"发布节奏为每 {publish_every} 轮 1 次")
-
-    max_publish = int(state.get("max_publish_per_session") or 0)
-    publish_count = int(state.get("publish_count") or 0)
-    if max_publish > 0 and publish_count >= max_publish:
-        blocked_reasons.append(f"本次会话发布已达上限 {max_publish} 次")
-
-    cooldown_sec = max(0.0, float(state.get("publish_cooldown_sec") or 0.0))
-    last_publish_ts = state.get("last_publish_ts")
-    if cooldown_sec > 0 and last_publish_ts:
-        remain = cooldown_sec - (now_ts - float(last_publish_ts))
-        if remain > 0:
-            blocked_reasons.append(f"发布冷却剩余约 {int(remain)} 秒")
-
-    interaction_task = _consume_interaction_task_locked(state)
-    return {
-        "allow_publish": len(blocked_reasons) == 0,
-        "blocked_reasons": blocked_reasons,
-        "interaction_task": interaction_task,
-    }
-
-
-def _build_next_cycle_prompt_locked(state: dict, next_cycle: int, strategy: dict) -> str:
-    topic = str(state.get("profile_topic") or "通用")
-    interaction_task = str(strategy.get("interaction_task") or "").strip()
-    base_prompt = str(state.get("continuous_prompt") or "").strip()
-    allow_publish = bool(strategy.get("allow_publish"))
-    anchor_required = bool(state.get("topic_anchor_required", False))
-    anchor_done = bool(state.get("topic_anchor_done", False))
-
-    if anchor_required and (not anchor_done):
-        prompt = (
-            f"进入第 {next_cycle} 轮任务（方向：{topic}）。"
-            f"本轮首要目标：主题锚定，必须先完成站内搜索“{topic}”并进入相关结果/话题页。"
-            "硬约束：在锚定完成前，禁止点赞/收藏/评论/关注/发布。"
-            "若搜索框焦点失败，先执行恢复链路（Esc -> 重新定位搜索框 -> 输入主题 -> Enter）。"
-        )
-        if base_prompt:
-            prompt += "\n补充约束：" + base_prompt
-        return prompt
-
-    if allow_publish:
-        prompt = (
-            f"进入第 {next_cycle} 轮小红书养号（方向：{topic}）。"
-            "本轮策略：互动优先，可发布最多 1 条。"
-            f"先执行：{interaction_task}。"
-            "如果完成发布，后续动作回到浏览/点赞/收藏/评论，不要再次发布。"
-        )
-    else:
-        blocked = strategy.get("blocked_reasons") or []
-        reason_text = "；".join(str(item) for item in blocked if str(item).strip()) or "策略限制"
-        prompt = (
-            f"进入第 {next_cycle} 轮小红书养号（方向：{topic}）。"
-            f"本轮策略：仅互动，禁止发布（原因：{reason_text}）。"
-            f"执行任务：{interaction_task}。"
-            "本轮不得执行“一键排版/下一步/发布”相关动作。"
-        )
-
-    prompt += (
-        " 浏览新内容硬约束：若连续 2 次点击同一区域仍未打开新内容，"
-        "必须先执行 scroll_down（或 PageDown）1-3 次，再选择新的卡片。"
-    )
-
-    if base_prompt:
-        prompt += "\n补充约束：" + base_prompt
-        if not allow_publish:
-            prompt += "；若与“禁止发布”冲突，以本轮策略为准。"
-    return prompt
-
-
-def _plan_is_incomplete_locked(state: dict) -> bool:
-    steps = state.get("plan_steps") or []
-    if not isinstance(steps, list) or not steps:
-        return False
-    idx = int(state.get("plan_step_index") or 0)
-    return idx < len(steps)
-
-
-def _looks_topic_anchored_from_text(text: str, topic: str) -> bool:
-    normalized_text = (text or "").lower()
-    normalized_topic = (topic or "").strip().lower()
-    if not normalized_text or not normalized_topic:
-        return False
-    if normalized_topic not in normalized_text:
-        return False
-    markers = (
-        "搜索",
-        "search",
-        "话题",
-        "结果页",
-        "搜索结果",
-        "performed left_click",
-        "pressed keys: enter",
-    )
-    return any(marker in normalized_text for marker in markers)
-
 
 def _build_replan_prompt_locked(state: dict, reason: str, cycle: int, error_text: str = "") -> str:
     goal = str(state.get("goal_task") or "").strip()
@@ -2151,51 +1841,11 @@ def _maybe_auto_reset_error(node_id: str):
 
 def _reset_task_state(node_id: str):
     state = NODE_TASK_STATES[node_id]
-    state.update(
-        {
-            "status": "idle",
-            "phase": "idle",
-            "task_type": "自动识别",
-            "profile_id": "",
-            "profile_topic": "",
-            "continuous_mode": False,
-            "continuous_cycle": 0,
-            "continuous_max_cycles": 1,
-            "continuous_interval_sec": 0.0,
-            "continuous_prompt": "",
-            "publish_every_cycles": 4,
-            "publish_cooldown_sec": 1800.0,
-            "max_publish_per_session": 2,
-            "publish_count": 0,
-            "last_publish_ts": None,
-            "interaction_tasks": [],
-            "interaction_task_index": 0,
-            "topic_anchor_required": False,
-            "topic_anchor_done": False,
-            "topic_anchor_input_hit": False,
-            "topic_anchor_results_hit": False,
-            "failover_budget": AUTO_PROXY_FAILOVER_MAX_SWITCHES,
-            "failover_switches": 0,
-            "run_attempt": 0,
-            "consecutive_failures": 0,
-            "next_retry_at": None,
-            "messages": [],
-            "responses": {},
-            "tools": {},
-            "chatbot_messages": [],
-            "stop": False,
-            "last_error": None,
-            "last_update": None,
-            "goal_task": "",
-            "auto_replan_budget": AUTO_REPLAN_MAX_ROUNDS,
-            "auto_replan_used": 0,
-            "stagnation_rounds": 0,
-            "auto_recover_budget": AUTO_RECOVER_MAX_CYCLES,
-            "auto_recover_used": 0,
-            "plan": None,
-            "plan_steps": None,
-            "plan_step_index": 0,
-        }
+    reset_task_state_fields(
+        state,
+        auto_proxy_failover_max_switches=AUTO_PROXY_FAILOVER_MAX_SWITCHES,
+        auto_replan_max_rounds=AUTO_REPLAN_MAX_ROUNDS,
+        auto_recover_max_cycles=AUTO_RECOVER_MAX_CYCLES,
     )
     _reset_runtime_monitor(node_id)
 
@@ -2257,121 +1907,20 @@ def _extract_llm_output(message) -> str:
     return text
 
 
-_BACKEND_NOISY_PREFIXES = (
-    "📋 动作:",
-    "analysis:",
-    "next action:",
-    "box id:",
-    "from box id:",
-    "to box id:",
-    "box_centroid_coordinate:",
-    "moved mouse to",
-    "performed left_click",
-    "performed double_click",
-    "performed right_click",
-    "performed scroll_down",
-    "performed scroll_up",
-    "pressed keys:",
-    "⌨️ 已输入文本",
-)
-_BACKEND_IMPORTANT_MARKERS = (
-    "❌",
-    "⚠️",
-    "♻️",
-    "🔀",
-    "✅",
-    "⏹",
-    "阶段：",
-    "错误",
-    "失败",
-    "exception",
-    "timeout",
-    "403",
-    "404",
-    "429",
-    "500",
-    "502",
-    "503",
-)
-_RUNTIME_SIGNAL_PATTERNS = {
-    "action_gate": ("动作确认门",),
-    "repeat_click": ("次点击相同位置", "repeated clicking on nearly the same spot"),
-    "focus_probe": ("focus probe failed", "输入动作未生效"),
-    "recoverable_error": ("可恢复错误",),
-    "proxy_403": ("403 client error", "403", "余额不足"),
-    "proxy_404": ("404 client error", "404"),
-    "proxy_502": ("502 server error", "bad gateway"),
-    "failover": ("通道故障自动切换",),
-}
-
-
 def _compact_log_text(text: str, max_len: int = BACKEND_LOG_TEXT_MAX) -> str:
-    line = " ".join(str(text or "").split())
-    if len(line) <= max_len:
-        return line
-    return line[:max_len] + "..."
+    return RUNTIME_LOG_MONITOR.compact_log_text(text, max_len=max_len)
 
 
 def _should_print_backend_line(text: str) -> bool:
-    if DEBUG_LOGS or BACKEND_LOG_MODE == "verbose":
-        return True
-    if not text:
-        return False
-    lowered = str(text).strip().lower()
-    if not lowered:
-        return False
-    if any(marker.lower() in lowered for marker in _BACKEND_IMPORTANT_MARKERS):
-        return True
-    return not any(lowered.startswith(prefix) for prefix in _BACKEND_NOISY_PREFIXES)
+    return RUNTIME_LOG_MONITOR.should_print_backend_line(text)
 
 
 def _reset_runtime_monitor(node_id: str):
-    with RUNTIME_MONITOR_LOCK:
-        RUNTIME_MONITOR[node_id] = {
-            "last_summary_ts": time.time(),
-            "counts": {},
-            "samples": {},
-        }
+    RUNTIME_LOG_MONITOR.reset(node_id)
 
 
 def _track_runtime_signal(node_id: str, text: str):
-    if not text:
-        return
-    lowered = str(text).lower()
-    matched: list[str] = []
-    for signal, patterns in _RUNTIME_SIGNAL_PATTERNS.items():
-        if any(pattern in lowered for pattern in patterns):
-            matched.append(signal)
-    if not matched:
-        return
-
-    now_ts = time.time()
-    with RUNTIME_MONITOR_LOCK:
-        watcher = RUNTIME_MONITOR.setdefault(
-            node_id,
-            {"last_summary_ts": now_ts, "counts": {}, "samples": {}},
-        )
-        counts = watcher.setdefault("counts", {})
-        samples = watcher.setdefault("samples", {})
-        for signal in matched:
-            counts[signal] = int(counts.get(signal, 0)) + 1
-            samples[signal] = _compact_log_text(text, max_len=140)
-
-        if now_ts - float(watcher.get("last_summary_ts", 0.0)) < BACKEND_LOG_SUMMARY_INTERVAL_SEC:
-            return
-
-        if not counts:
-            watcher["last_summary_ts"] = now_ts
-            return
-
-        ordered = sorted(counts.items(), key=lambda kv: (-int(kv[1]), kv[0]))
-        summary = ", ".join(f"{k}={v}" for k, v in ordered[:5])
-        sample_key = ordered[0][0]
-        sample_text = str(samples.get(sample_key, "") or "")
-        print(f"[MONITOR {node_id}] {summary}" + (f" | sample={sample_text}" if sample_text else ""))
-        watcher["counts"] = {}
-        watcher["samples"] = {}
-        watcher["last_summary_ts"] = now_ts
+    RUNTIME_LOG_MONITOR.emit_signal_summary(node_id, text)
 
 def _background_output_callback(node_id: str, message, sender="bot", hide_images=False):
     llm_text = _extract_llm_output(message)
