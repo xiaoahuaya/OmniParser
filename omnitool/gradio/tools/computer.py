@@ -42,6 +42,7 @@ FOCUS_PROBE_ROI_HALF_WIDTH = int(os.getenv("OMNITOOL_FOCUS_PROBE_ROI_HALF_WIDTH"
 FOCUS_PROBE_ROI_HALF_HEIGHT = int(os.getenv("OMNITOOL_FOCUS_PROBE_ROI_HALF_HEIGHT", "90"))
 FOCUS_PROBE_INSERT_DIFF_MIN = float(os.getenv("OMNITOOL_FOCUS_PROBE_INSERT_DIFF_MIN", "0.0035"))
 FOCUS_PROBE_RESTORE_DIFF_MAX = float(os.getenv("OMNITOOL_FOCUS_PROBE_RESTORE_DIFF_MAX", "0.0018"))
+WINDOW_INFO_REFRESH_TTL_SEC = float(os.getenv("OMNITOOL_WINDOW_INFO_REFRESH_TTL_SEC", "0.5"))
 
 Action = Literal[
     "key",
@@ -131,6 +132,14 @@ class ComputerTool(BaseAnthropicTool):
         if self.remote_mode and not self.windows_host_url.startswith("http"):
             self.windows_host_url = f"http://{self.windows_host_url}"
 
+        self._window_offset_x = 0
+        self._window_offset_y = 0
+        self._window_title = ""
+        self._window_process = ""
+        self._window_info_ts = 0.0
+
+        if self.remote_mode:
+            self._refresh_remote_window_info(force=True)
         self.width, self.height = self.get_screen_size()
         hint = self._screen_profile_hint()
         if hint:
@@ -191,8 +200,11 @@ class ComputerTool(BaseAnthropicTool):
             end_x = min(max(end_x, 0), screen_width - 1)
             end_y = min(max(end_y, 0), screen_height - 1)
 
-            self.send_action(f"pyautogui.moveTo({start_x}, {start_y})")
-            self.send_action(f"pyautogui.dragTo({end_x}, {end_y}, duration={DRAG_DURATION_SEC})")
+            action_start_x, action_start_y = self._to_screen_coordinates(start_x, start_y)
+            action_end_x, action_end_y = self._to_screen_coordinates(end_x, end_y)
+
+            self.send_action(f"pyautogui.moveTo({action_start_x}, {action_start_y})")
+            self.send_action(f"pyautogui.dragTo({action_end_x}, {action_end_y}, duration={DRAG_DURATION_SEC})")
             return ToolResult(output=f"Dragged mouse from ({start_x}, {start_y}) to ({end_x}, {end_y})")
 
         if action in ("mouse_move", "left_click_drag"):
@@ -225,11 +237,13 @@ class ComputerTool(BaseAnthropicTool):
 
             if action == "mouse_move":
                 self._last_mouse_target = (x, y)
-                self.send_action(f"pyautogui.moveTo({x}, {y})")
+                action_x, action_y = self._to_screen_coordinates(x, y)
+                self.send_action(f"pyautogui.moveTo({action_x}, {action_y})")
                 return ToolResult(output=f"Moved mouse to ({x}, {y})")
             elif action == "left_click_drag":
                 current_x, current_y = self.send_action("pyautogui.position()")
-                self.send_action(f"pyautogui.dragTo({x}, {y}, duration=0.5)")
+                action_x, action_y = self._to_screen_coordinates(x, y)
+                self.send_action(f"pyautogui.dragTo({action_x}, {action_y}, duration=0.5)")
                 return ToolResult(output=f"Dragged mouse from ({current_x}, {current_y}) to ({x}, {y})")
 
         if action in ("key", "type", "type_submit"):
@@ -357,7 +371,8 @@ class ComputerTool(BaseAnthropicTool):
                 screen_width, screen_height = self.get_screen_size()
                 x = min(max(x, 0), screen_width - 1)
                 y = min(max(y, 0), screen_height - 1)
-                self.send_action(f"pyautogui.moveTo({x}, {y})")
+                action_x, action_y = self._to_screen_coordinates(x, y)
+                self.send_action(f"pyautogui.moveTo({action_x}, {action_y})")
             time.sleep(HOVER_DELAY_SEC)
             return ToolResult(output=f"Performed {action}")
         if action == "wait":
@@ -439,6 +454,9 @@ class ComputerTool(BaseAnthropicTool):
                 if not match:
                     raise ToolError(f"Could not parse coordinates from output: {output}")
                 x, y = map(int, match.groups())
+                self._refresh_remote_window_info(force=False)
+                x = max(0, x - self._window_offset_x)
+                y = max(0, y - self._window_offset_y)
                 return x, y
             return None
         except requests.exceptions.RequestException as e:
@@ -455,6 +473,7 @@ class ComputerTool(BaseAnthropicTool):
 
     async def screenshot(self):
         if self.remote_mode:
+            self._refresh_remote_window_info(force=True)
             response = requests.get(
                 f"{self.windows_host_url}/screenshot",
                 timeout=60,
@@ -462,6 +481,7 @@ class ComputerTool(BaseAnthropicTool):
             )
             if response.status_code != 200:
                 raise ToolError(f"Failed to capture remote screenshot. Status code: {response.status_code}")
+            self._update_window_info_from_headers(response.headers)
             return ToolResult(base64_image=base64.b64encode(response.content).decode())
         if not hasattr(self, 'target_dimension'):
             self.target_dimension = MAX_SCALING_TARGETS["WXGA"]
@@ -531,6 +551,9 @@ class ComputerTool(BaseAnthropicTool):
     def get_screen_size(self):
         if not self.remote_mode:
             return self.get_local_screen_size()
+        self._refresh_remote_window_info(force=False)
+        if getattr(self, "width", 0) and getattr(self, "height", 0):
+            return self.width, self.height
         try:
             response = requests.post(
                 f"{self.windows_host_url}/execute",
@@ -549,6 +572,56 @@ class ComputerTool(BaseAnthropicTool):
             return width, height
         except Exception:
             return 1366, 768
+
+    def _refresh_remote_window_info(self, force: bool = False):
+        if not self.remote_mode:
+            return
+        now = time.time()
+        if (not force) and (now - self._window_info_ts < WINDOW_INFO_REFRESH_TTL_SEC):
+            return
+        try:
+            response = requests.get(
+                f"{self.windows_host_url}/window_info",
+                timeout=10,
+                proxies={"http": "", "https": ""},
+            )
+            if response.status_code != 200:
+                return
+            payload = response.json()
+            window = payload.get("window") or {}
+            width = int(window.get("width") or 0)
+            height = int(window.get("height") or 0)
+            if width > 0 and height > 0:
+                self.width = width
+                self.height = height
+            self._window_offset_x = int(window.get("x") or 0)
+            self._window_offset_y = int(window.get("y") or 0)
+            self._window_title = str(window.get("title") or "")
+            self._window_process = str(window.get("process") or "")
+            self._window_info_ts = now
+        except Exception:
+            return
+
+    def _update_window_info_from_headers(self, headers):
+        try:
+            width = int(headers.get("X-Window-Width") or 0)
+            height = int(headers.get("X-Window-Height") or 0)
+            if width > 0 and height > 0:
+                self.width = width
+                self.height = height
+            self._window_offset_x = int(headers.get("X-Window-Offset-X") or 0)
+            self._window_offset_y = int(headers.get("X-Window-Offset-Y") or 0)
+            self._window_title = str(headers.get("X-Window-Title") or "")
+            self._window_process = str(headers.get("X-Window-Process") or "")
+            self._window_info_ts = time.time()
+        except Exception:
+            return
+
+    def _to_screen_coordinates(self, x: int, y: int) -> tuple[int, int]:
+        if not self.remote_mode:
+            return x, y
+        self._refresh_remote_window_info(force=False)
+        return x + self._window_offset_x, y + self._window_offset_y
 
     def _screen_profile_hint(self) -> str:
         common = {(1024, 768), (1280, 800), (1366, 768), (1920, 1080)}
@@ -669,6 +742,7 @@ class ComputerTool(BaseAnthropicTool):
             )
             if response.status_code != 200:
                 raise ToolError(f"Probe screenshot failed: HTTP {response.status_code}")
+            self._update_window_info_from_headers(response.headers)
             return base64.b64encode(response.content).decode()
         img = pyautogui.screenshot()
         buffer = BytesIO()

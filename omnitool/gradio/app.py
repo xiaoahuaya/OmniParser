@@ -3196,6 +3196,31 @@ with gr.Blocks(theme=gr.themes.Default()) as demo:
 
     status_bar = gr.Markdown(_task_status_text(DEFAULT_NODE_ID))
     gr.Markdown("⏱️ 运行时长说明：`max_seconds=0` 表示不限时，当前默认不限时。")
+    with gr.Accordion("目标窗口", open=False):
+        with gr.Row():
+            target_window_picker = gr.Dropdown(
+                label="检测到的窗口",
+                choices=[],
+                value=None,
+                interactive=True,
+                allow_custom_value=False,
+            )
+            refresh_windows_btn = gr.Button("刷新窗口列表", variant="secondary")
+        with gr.Row():
+            target_window_title = gr.Textbox(
+                label="窗口标题包含",
+                placeholder="例如：金铲铲 / Chrome / 记事本",
+                interactive=True,
+            )
+            target_process_name = gr.Textbox(
+                label="进程名包含",
+                placeholder="例如：chrome.exe",
+                interactive=True,
+            )
+        with gr.Row():
+            apply_window_target_btn = gr.Button("应用到当前节点", variant="primary")
+            clear_window_target_btn = gr.Button("清除目标窗口", variant="secondary")
+        window_target_status = gr.Markdown("ℹ️ 未设置目标窗口，当前按整屏工作。")
     gr.HTML(
         '<a href="?view=monitor" target="_blank" '
         'style="display:inline-block;margin:4px 0 10px 0;text-decoration:none;color:#2563eb;">'
@@ -3316,6 +3341,140 @@ with gr.Blocks(theme=gr.themes.Default()) as demo:
             return gr.update(visible=False), gr.update(visible=True)
         return gr.update(visible=False), gr.update(visible=False)
 
+    def _window_api_base(node_id: str | None) -> str:
+        primary = _primary_node_id(node_id)
+        host = str(NODE_TASK_STATES[primary].get("windows_host_url") or "").strip()
+        if not host:
+            raise gr.Error("当前节点未配置窗口控制服务。")
+        if not host.startswith("http"):
+            host = f"http://{host}"
+        return host
+
+    def _format_window_status_from_payload(payload: dict) -> str:
+        target = payload.get("target") or {}
+        window = payload.get("window") or {}
+        title = str(window.get("title") or target.get("title") or "").strip()
+        process = str(window.get("process") or target.get("process") or "").strip()
+        width = int(window.get("width") or 0)
+        height = int(window.get("height") or 0)
+        x = int(window.get("x") or 0)
+        y = int(window.get("y") or 0)
+        if window.get("target_found"):
+            return (
+                f"🎯 目标窗口：`{title or '未命名窗口'}`"
+                + (f" | 进程：`{process}`" if process else "")
+                + f" | 区域：`{width}x{height}` @ `({x}, {y})`"
+            )
+        if window.get("target_configured"):
+            return "⚠️ 已配置目标窗口，但当前未命中；截图将回退为整屏。"
+        return "ℹ️ 未设置目标窗口，当前按整屏工作。"
+
+    def _window_choices_from_payload(payload: dict) -> list[tuple[str, str]]:
+        windows = payload.get("windows") or []
+        choices: list[tuple[str, str]] = []
+        for item in windows:
+            hwnd = str(item.get("hwnd") or "").strip()
+            label = str(item.get("label") or "").strip()
+            if hwnd and label:
+                choices.append((label, hwnd))
+        return choices
+
+    def refresh_window_targets(node_id: str | None):
+        try:
+            base_url = _window_api_base(node_id)
+            windows_resp = requests.get(
+                f"{base_url}/windows",
+                timeout=5,
+                proxies={"http": "", "https": ""},
+            )
+            info_resp = requests.get(
+                f"{base_url}/window_info",
+                timeout=5,
+                proxies={"http": "", "https": ""},
+            )
+            if windows_resp.status_code != 200 or info_resp.status_code != 200:
+                return (
+                    gr.update(choices=[], value=None),
+                    "",
+                    "",
+                    f"⚠️ 当前节点暂不支持目标窗口控制（HTTP {windows_resp.status_code}/{info_resp.status_code}）。",
+                )
+            window_choices = _window_choices_from_payload(windows_resp.json())
+            info_payload = info_resp.json()
+            target = info_payload.get("target") or {}
+            selected_hwnd = str(target.get("hwnd") or "").strip() or None
+            return (
+                gr.update(choices=window_choices, value=selected_hwnd),
+                str(target.get("title") or ""),
+                str(target.get("process") or ""),
+                _format_window_status_from_payload(info_payload),
+            )
+        except Exception as exc:
+            return (
+                gr.update(choices=[], value=None),
+                "",
+                "",
+                f"⚠️ 读取目标窗口状态失败：{str(exc)}",
+            )
+
+    def apply_window_target(node_id: str | None, hwnd_value: str | None, title_value: str, process_value: str):
+        payload: dict[str, object] = {}
+        hwnd_text = str(hwnd_value or "").strip()
+        title_text = str(title_value or "").strip()
+        process_text = str(process_value or "").strip()
+        if hwnd_text:
+            payload["hwnd"] = int(hwnd_text)
+        if title_text:
+            payload["title"] = title_text
+        if process_text:
+            payload["process"] = process_text
+        if not payload:
+            raise gr.Error("请先选择窗口，或填写标题/进程名后再应用。")
+
+        statuses: list[str] = []
+        success_count = 0
+        for target_node in _target_node_ids(node_id):
+            try:
+                base_url = _window_api_base(target_node)
+                response = requests.post(
+                    f"{base_url}/window_target",
+                    json=payload,
+                    timeout=5,
+                    proxies={"http": "", "https": ""},
+                )
+                if response.status_code != 200:
+                    statuses.append(f"`{target_node}` 设置失败: HTTP {response.status_code}")
+                    continue
+                statuses.append(f"`{target_node}` {_format_window_status_from_payload(response.json())}")
+                success_count += 1
+            except Exception as exc:
+                statuses.append(f"`{target_node}` 设置失败: {str(exc)}")
+
+        picker_update, title_text, process_text, status_text = refresh_window_targets(node_id)
+        status_block = status_text if len(statuses) == 1 and success_count == 0 else " | ".join(statuses)
+        return picker_update, title_text, process_text, status_block
+
+    def clear_window_target(node_id: str | None):
+        statuses: list[str] = []
+        for target_node in _target_node_ids(node_id):
+            try:
+                base_url = _window_api_base(target_node)
+                response = requests.post(
+                    f"{base_url}/window_target",
+                    json={"clear": True},
+                    timeout=5,
+                    proxies={"http": "", "https": ""},
+                )
+                if response.status_code != 200:
+                    statuses.append(f"`{target_node}` 清除失败: HTTP {response.status_code}")
+                    continue
+                statuses.append(f"`{target_node}` 已清除目标窗口")
+            except Exception as exc:
+                statuses.append(f"`{target_node}` 清除失败: {str(exc)}")
+
+        picker_update, _title_text, _process_text, _status_text = refresh_window_targets(node_id)
+        return picker_update, "", "", " | ".join(statuses)
+
     def _monitor_cache_get(node_id: str) -> dict:
         with MONITOR_CACHE_LOCK:
             if node_id not in MONITOR_CACHE:
@@ -3415,10 +3574,30 @@ with gr.Blocks(theme=gr.themes.Default()) as demo:
         inputs=[active_node],
         outputs=chat_and_status_outputs,
     )
+    active_node.change(
+        fn=refresh_window_targets,
+        inputs=[active_node],
+        outputs=[target_window_picker, target_window_title, target_process_name, window_target_status],
+    )
     topic_source.change(
         fn=update_topic_source,
         inputs=[topic_source],
         outputs=[preset_topic, manual_topic],
+    )
+    refresh_windows_btn.click(
+        fn=refresh_window_targets,
+        inputs=[active_node],
+        outputs=[target_window_picker, target_window_title, target_process_name, window_target_status],
+    )
+    apply_window_target_btn.click(
+        fn=apply_window_target,
+        inputs=[active_node, target_window_picker, target_window_title, target_process_name],
+        outputs=[target_window_picker, target_window_title, target_process_name, window_target_status],
+    )
+    clear_window_target_btn.click(
+        fn=clear_window_target,
+        inputs=[active_node],
+        outputs=[target_window_picker, target_window_title, target_process_name, window_target_status],
     )
     flow_doc_refresh_btn.click(
         fn=_refresh_flow_doc_editor,
