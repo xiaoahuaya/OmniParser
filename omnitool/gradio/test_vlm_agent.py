@@ -18,27 +18,31 @@ def _ns_factory(**kwargs):
     return types.SimpleNamespace(**kwargs)
 
 
-if "anthropic" not in sys.modules:
+anthropic_mod = sys.modules.get("anthropic")
+if anthropic_mod is None:
     anthropic_mod = types.ModuleType("anthropic")
-    anthropic_mod.APIResponse = object
-
-    anthropic_types_mod = types.ModuleType("anthropic.types")
-    anthropic_types_mod.ToolResultBlockParam = dict
-
-    anthropic_beta_mod = types.ModuleType("anthropic.types.beta")
-    anthropic_beta_mod.BetaContentBlock = object
-    anthropic_beta_mod.BetaMessage = _ns_factory
-    anthropic_beta_mod.BetaTextBlock = _ns_factory
-    anthropic_beta_mod.BetaToolUseBlock = _ns_factory
-    anthropic_beta_mod.BetaMessageParam = dict
-    anthropic_beta_mod.BetaUsage = _ns_factory
-
-    anthropic_types_mod.beta = anthropic_beta_mod
-    anthropic_mod.types = anthropic_types_mod
-
     sys.modules["anthropic"] = anthropic_mod
+anthropic_mod.APIResponse = getattr(anthropic_mod, "APIResponse", object)
+
+anthropic_types_mod = sys.modules.get("anthropic.types")
+if anthropic_types_mod is None:
+    anthropic_types_mod = types.ModuleType("anthropic.types")
     sys.modules["anthropic.types"] = anthropic_types_mod
+anthropic_types_mod.ToolResultBlockParam = getattr(anthropic_types_mod, "ToolResultBlockParam", dict)
+
+anthropic_beta_mod = sys.modules.get("anthropic.types.beta")
+if anthropic_beta_mod is None:
+    anthropic_beta_mod = types.ModuleType("anthropic.types.beta")
     sys.modules["anthropic.types.beta"] = anthropic_beta_mod
+anthropic_beta_mod.BetaContentBlock = getattr(anthropic_beta_mod, "BetaContentBlock", object)
+anthropic_beta_mod.BetaMessage = getattr(anthropic_beta_mod, "BetaMessage", _ns_factory)
+anthropic_beta_mod.BetaTextBlock = getattr(anthropic_beta_mod, "BetaTextBlock", _ns_factory)
+anthropic_beta_mod.BetaToolUseBlock = getattr(anthropic_beta_mod, "BetaToolUseBlock", _ns_factory)
+anthropic_beta_mod.BetaMessageParam = getattr(anthropic_beta_mod, "BetaMessageParam", dict)
+anthropic_beta_mod.BetaUsage = getattr(anthropic_beta_mod, "BetaUsage", _ns_factory)
+
+anthropic_types_mod.beta = anthropic_beta_mod
+anthropic_mod.types = anthropic_types_mod
 
 
 if "agent.llm_utils.oaiclient" not in sys.modules:

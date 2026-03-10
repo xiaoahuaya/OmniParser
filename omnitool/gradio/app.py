@@ -56,6 +56,14 @@ from task_state_store import (
     reset_task_state_fields,
     save_task_state,
 )
+from run_limits import max_seconds_label, normalize_max_seconds
+from node_config import (
+    DEFAULT_LOCAL_NODE_HOST,
+    DEFAULT_REMOTE_NODE_HOSTS,
+    node_id_from_host,
+    node_label,
+    resolve_node_hosts,
+)
 from runtime_log_monitor import RuntimeLogMonitor
 
 
@@ -110,7 +118,7 @@ AUTO_PROXY_FAILOVER_ENABLED = False
 AUTO_PROXY_FAILOVER_MAX_SWITCHES = 0
 BACKEND_LOG_MODE = str(os.getenv("OMNITOOL_BACKEND_LOG_MODE", "compact") or "compact").strip().lower()
 BACKEND_LOG_TEXT_MAX = max(80, int(os.getenv("OMNITOOL_BACKEND_LOG_TEXT_MAX", "220")))
-BACKEND_LOG_STEP_HEARTBEAT_EVERY = max(0, int(os.getenv("OMNITOOL_BACKEND_LOG_STEP_HEARTBEAT_EVERY", "8")))
+BACKEND_LOG_STEP_HEARTBEAT_EVERY = max(0, int(os.getenv("OMNITOOL_BACKEND_LOG_STEP_HEARTBEAT_EVERY", "0")))
 BACKEND_LOG_SUMMARY_INTERVAL_SEC = max(8.0, float(os.getenv("OMNITOOL_BACKEND_LOG_SUMMARY_INTERVAL_SEC", "25")))
 RUNTIME_LOG_MONITOR = RuntimeLogMonitor(
     debug_logs=DEBUG_LOGS,
@@ -1093,42 +1101,41 @@ def parse_arguments():
         type=str,
         default=os.getenv(
             "OMNITOOL_WINDOWS_HOST_URLS",
-            "192.168.31.134:5000,192.168.31.135:5000,192.168.31.136:5000",
+            DEFAULT_REMOTE_NODE_HOSTS,
         ),
     )
     parser.add_argument("--omniparser_server_url", type=str, default="localhost:9000")
     parser.add_argument("--local", action="store_true", help="本地模式，直接控制本机桌面")
+    parser.add_argument(
+        "--local_node_host",
+        type=str,
+        default=os.getenv("OMNITOOL_LOCAL_NODE_HOST", DEFAULT_LOCAL_NODE_HOST),
+        help="多节点模式下自动接入的本机节点地址",
+    )
+    parser.add_argument(
+        "--exclude_local_node",
+        action="store_true",
+        help="多节点模式下不自动接入本机节点",
+    )
     parser.add_argument("--max_steps", type=int, default=int(os.getenv("OMNITOOL_MAX_STEPS", "80")))
-    parser.add_argument("--max_seconds", type=int, default=int(os.getenv("OMNITOOL_MAX_SECONDS", "900")))
+    parser.add_argument("--max_seconds", type=int, default=int(os.getenv("OMNITOOL_MAX_SECONDS", "0")))
     return parser.parse_args()
 args = parse_arguments()
 
-def _node_id_from_host(host: str) -> str:
-    normalized = host.strip().lower().replace("http://", "").replace("https://", "")
-    normalized = normalized.replace(".", "_").replace(":", "_")
-    return re.sub(r"[^a-z0-9_]+", "_", normalized).strip("_")
-
 
 def _resolve_node_hosts() -> list[str]:
-    if args.local:
-        return []
     raw_hosts = args.windows_host_urls or args.windows_host_url
-    parts = [p.strip() for p in str(raw_hosts).split(",") if p.strip()]
-    if not parts and args.windows_host_url:
-        parts = [args.windows_host_url.strip()]
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for host in parts:
-        clean = host.replace("http://", "").replace("https://", "").strip()
-        if not clean or clean in seen:
-            continue
-        seen.add(clean)
-        deduped.append(clean)
-    return deduped
+    return resolve_node_hosts(
+        raw_hosts=str(raw_hosts or ""),
+        fallback_host=args.windows_host_url,
+        include_local_node=not args.exclude_local_node,
+        local_node_host=args.local_node_host,
+        local_mode=args.local,
+    )
 
 
 NODE_HOSTS = _resolve_node_hosts()
-NODE_IDS = [_node_id_from_host(host) for host in NODE_HOSTS]
+NODE_IDS = [node_id_from_host(host) for host in NODE_HOSTS]
 NODE_MAP = dict(zip(NODE_IDS, NODE_HOSTS))
 DEFAULT_NODE_ID = NODE_IDS[0] if NODE_IDS else "local"
 
@@ -2076,7 +2083,7 @@ def _run_task(node_id: str):
         proxy_base_url = task_state.get("proxy_base_url")
         proxy_model = task_state.get("proxy_model")
         max_steps = task_state.get("max_steps")
-        max_seconds = task_state.get("max_seconds")
+        max_seconds = normalize_max_seconds(task_state.get("max_seconds"))
         if CONTINUOUS_IGNORE_MAX_SECONDS and bool(task_state.get("continuous_mode", False)):
             max_seconds = None
         plan_steps = task_state.get("plan_steps") or []
@@ -2713,7 +2720,8 @@ def _start_background_task_single(user_input, state, node_id: str) -> tuple[bool
         task_state["proxy_model"] = state.get("proxy_model")
         task_state["only_n_most_recent_images"] = state.get("only_n_most_recent_images", 2)
         task_state["max_steps"] = state.get("max_steps")
-        task_state["max_seconds"] = state.get("max_seconds")
+        normalized_max_seconds = normalize_max_seconds(state.get("max_seconds"))
+        task_state["max_seconds"] = 0 if normalized_max_seconds is None else normalized_max_seconds
         task_state["auto_replan_budget"] = AUTO_REPLAN_MAX_ROUNDS
         task_state["auto_replan_used"] = 0
         task_state["stagnation_rounds"] = 0
@@ -2769,11 +2777,18 @@ def _start_background_task_single(user_input, state, node_id: str) -> tuple[bool
                     f"会话发布上限={task_state['max_publish_per_session']}。",
                 )
             )
-            if CONTINUOUS_IGNORE_MAX_SECONDS and task_state.get("max_seconds"):
+            if CONTINUOUS_IGNORE_MAX_SECONDS and normalize_max_seconds(task_state.get("max_seconds")) is not None:
                 task_state["chatbot_messages"].append(
                     (
                         None,
                         f"⏱️ 持续模式已忽略单轮 max_seconds={task_state.get('max_seconds')}，仅受手动停止/策略轮次限制。",
+                    )
+                )
+            else:
+                task_state["chatbot_messages"].append(
+                    (
+                        None,
+                        f"⏱️ 单轮最大运行时间：{max_seconds_label(task_state.get('max_seconds'))}。",
                     )
                 )
             first_cycle_strategy = _decide_next_cycle_strategy_locked(task_state, next_cycle=1, now_ts=time.time())
@@ -2789,6 +2804,12 @@ def _start_background_task_single(user_input, state, node_id: str) -> tuple[bool
             )
             first_cycle_prompt = _build_next_cycle_prompt_locked(task_state, next_cycle=1, strategy=first_cycle_strategy)
         else:
+            task_state["chatbot_messages"].append(
+                (
+                    None,
+                    f"⏱️ 单轮最大运行时间：{max_seconds_label(task_state.get('max_seconds'))}。",
+                )
+            )
             first_cycle_prompt = ""
 
         task_state["messages"].append(
@@ -2897,6 +2918,7 @@ def start_background_task(
         preset_topic=preset_topic,
         manual_topic=manual_topic,
     )
+    compose_summary = compose_summary + f" | 单轮时长={max_seconds_label(state.get('max_seconds'))}"
     target_ids = _target_node_ids(node_id)
     started_nodes: list[str] = []
     failed_nodes: list[str] = []
@@ -3110,7 +3132,7 @@ with gr.Blocks(theme=gr.themes.Default()) as demo:
     node_choices = []
     for idx, node_id in enumerate(ACTIVE_NODE_IDS, start=1):
         host = NODE_TASK_STATES[node_id].get("windows_host_url") or "local"
-        node_choices.append((f"Node{idx} | {host}", node_id))
+        node_choices.append((node_label(host, idx), node_id))
     if len(ACTIVE_NODE_IDS) > 1:
         node_choices.insert(0, ("All Nodes (Broadcast)", ALL_NODES_ID))
 
@@ -3173,6 +3195,7 @@ with gr.Blocks(theme=gr.themes.Default()) as demo:
             resume_button = gr.Button(value="Resume", variant="secondary")
 
     status_bar = gr.Markdown(_task_status_text(DEFAULT_NODE_ID))
+    gr.Markdown("⏱️ 运行时长说明：`max_seconds=0` 表示不限时，当前默认不限时。")
     gr.HTML(
         '<a href="?view=monitor" target="_blank" '
         'style="display:inline-block;margin:4px 0 10px 0;text-decoration:none;color:#2563eb;">'
@@ -3197,7 +3220,7 @@ with gr.Blocks(theme=gr.themes.Default()) as demo:
                     with gr.Accordion("各节点会话（可折叠）", open=False):
                         for idx, node_id in enumerate(ACTIVE_NODE_IDS, start=1):
                             host = NODE_TASK_STATES[node_id].get("windows_host_url") or "local"
-                            with gr.Accordion(f"Node{idx} | {host}", open=False):
+                            with gr.Accordion(node_label(host, idx), open=False):
                                 node_chat = gr.Chatbot(
                                     label=f"{host}",
                                     autoscroll=True,
@@ -3212,7 +3235,7 @@ with gr.Blocks(theme=gr.themes.Default()) as demo:
                     with gr.Tabs():
                         for idx, node_id in enumerate(ACTIVE_NODE_IDS, start=1):
                             host = NODE_TASK_STATES[node_id].get("windows_host_url") or "local"
-                            with gr.Tab(f"Node{idx} | {host}"):
+                            with gr.Tab(node_label(host, idx)):
                                 monitor_status = gr.Markdown(_task_status_text(node_id))
                                 monitor_view = gr.HTML(value="", container=False, elem_classes="no-padding")
                                 monitor_status_components.append(monitor_status)
@@ -3224,7 +3247,7 @@ with gr.Blocks(theme=gr.themes.Default()) as demo:
                 for idx, node_id in enumerate(ACTIVE_NODE_IDS, start=1):
                     host = NODE_TASK_STATES[node_id].get("windows_host_url") or "local"
                     with gr.Column():
-                        gr.Markdown(f"**Node{idx}** `{host}`")
+                        gr.Markdown(f"**{node_label(host, idx).split(' | ')[0]}** `{host}`")
                         monitor_grid_view = gr.HTML(value="", container=False, elem_classes="no-padding")
                         monitor_grid_view_components.append(monitor_grid_view)
 

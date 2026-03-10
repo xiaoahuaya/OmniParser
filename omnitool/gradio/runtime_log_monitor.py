@@ -13,6 +13,16 @@ DEFAULT_NOISY_PREFIXES = (
     "📋 动作:",
     "analysis:",
     "next action:",
+    "[mouse_move]",
+    "[left_click]",
+    "[double_click]",
+    "[right_click]",
+    "[scroll_down]",
+    "[scroll_up]",
+    "[key]",
+    "[type]",
+    "[wait]",
+    "[result]",
     "box id:",
     "from box id:",
     "to box id:",
@@ -151,4 +161,3 @@ class RuntimeLogMonitor:
         line = self.track_signal(node_id, text)
         if line:
             print(line)
-
