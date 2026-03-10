@@ -442,11 +442,7 @@ class VLMAgent:
             latency_vlm = time.time() - start
             parsed_json, strict_json, parse_error = _parse_vlm_response(vlm_response)
             if parsed_json is not None:
-                # 先看解析结果：严格 JSON 一律接受；仅在“非严格解析 + 明显错误文本”时触发重试。
-                if (not strict_json) and self._should_retry_response(vlm_response):
-                    last_error = parse_error or str(vlm_response)[:200]
-                    time.sleep(self.retry_backoff * (attempt + 1))
-                    continue
+                # 宽松解析已拿到合法动作时直接接受，避免把“失败恢复”等任务语义误判为接口错误。
                 vlm_response_json = parsed_json
                 if self.debug and not strict_json:
                     _debug_print(f"[WARN] Non-JSON response parsed with fallback: {parse_error}")
