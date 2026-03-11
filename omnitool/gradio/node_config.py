@@ -53,6 +53,29 @@ def resolve_node_hosts(
     return deduped
 
 
+NODE_OMNIPARSER_PORT_MAP: dict[str, int] = {
+    "192.168.31.134": 9001,
+    "192.168.31.135": 9002,
+}
+
+DEFAULT_OMNIPARSER_PORT = 9000
+
+
+def omniparser_url_for_node(node_host: str, fallback_url: str = "") -> str:
+    """
+    根据节点 host 返回对应的 omniparser server URL。
+    node_host 格式如 "192.168.31.134:5000"。
+    """
+    normalized = normalize_host(node_host)
+    ip = normalized.split(":")[0] if normalized else ""
+    port = NODE_OMNIPARSER_PORT_MAP.get(ip)
+    if port:
+        return f"localhost:{port}"
+    if fallback_url:
+        return fallback_url
+    return f"localhost:{DEFAULT_OMNIPARSER_PORT}"
+
+
 def node_label(host: str, index: int) -> str:
     normalized = normalize_host(host) or "local"
     prefix = "Local" if is_local_host(normalized) else f"Node{index}"

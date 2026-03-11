@@ -664,15 +664,19 @@ class ComputerTool(BaseAnthropicTool):
             return
         # Normalize browser interaction environment for better OCR/coordinate stability.
         try:
-            self.send_action("pyautogui.hotkey('win', 'up')")   # maximize active window
+            screen_w, screen_h = self.get_screen_size()
+            """
+            点击窗口右上角最大化按钮（关闭按钮左边第二个）。
+            Windows 标准窗口标题栏按钮从右到左：关闭 | 最大化 | 最小化，
+            每个按钮宽约 46px，最大化按钮中心约在 (screen_w - 69, 14)。
+            """
+            maximize_x = screen_w - 69
+            maximize_y = 14
+            self.send_action(f"pyautogui.click({maximize_x}, {maximize_y})")
+            time.sleep(0.3)
+            self.send_action("pyautogui.hotkey('ctrl', '0')")
             time.sleep(0.1)
-            self.send_action("pyautogui.hotkey('alt', 'space')")  # open system menu
-            time.sleep(0.05)
-            self.send_action("pyautogui.press('x')")              # maximize from menu if needed
-            time.sleep(0.1)
-            self.send_action("pyautogui.hotkey('ctrl', '0')")   # browser zoom reset to 100%
-            time.sleep(0.1)
-            self.send_action("pyautogui.press('esc')")          # close overlays/dropdowns
+            self.send_action("pyautogui.press('esc')")
         finally:
             self._preflight_done = True
 

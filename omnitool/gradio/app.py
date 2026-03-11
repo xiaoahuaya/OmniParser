@@ -35,7 +35,7 @@ from loop import (
     sampling_loop_sync,
 )
 from tools import ToolResult
-from llm_config import load_config, get_provider_config, get_all_providers
+from llm_config import load_config, save_config, get_provider_config, get_all_providers
 from agent.llm_utils.proxy_client import test_proxy_connection, run_proxy_interleaved
 from agent.llm_utils.oaiclient import run_oai_interleaved
 from agent.llm_utils.groqclient import run_groq_interleaved
@@ -63,6 +63,7 @@ from node_config import (
     node_id_from_host,
     node_label,
     resolve_node_hosts,
+    omniparser_url_for_node,
 )
 from runtime_log_monitor import RuntimeLogMonitor
 
@@ -1796,7 +1797,8 @@ def _probe_url(url: str, timeout: float = 3.0) -> tuple[bool, str]:
 
 def _check_node_health(node_id: str, timeout: float = 2.5) -> tuple[str, str]:
     host = NODE_TASK_STATES[node_id].get("windows_host_url") or ""
-    omni_ok, omni_detail = _probe_url(f"http://{args.omniparser_server_url}/probe", timeout=timeout)
+    omni_url = omniparser_url_for_node(host, fallback_url=args.omniparser_server_url)
+    omni_ok, omni_detail = _probe_url(f"http://{omni_url}/probe", timeout=timeout)
 
     host_ok = True
     host_detail = "local mode"
@@ -2211,7 +2213,10 @@ def _run_task(node_id: str):
                     api_key=api_key,
                     only_n_most_recent_images=only_n_images,
                     max_tokens=16384,
-                    omniparser_url=args.omniparser_server_url,
+                    omniparser_url=omniparser_url_for_node(
+                        task_state.get("windows_host_url", ""),
+                        fallback_url=args.omniparser_server_url,
+                    ),
                     windows_host_url=task_state.get("windows_host_url"),
                     capture_output_dir=f"./tmp/outputs/{node_id}",
                     proxy_base_url=proxy_base_url,
@@ -2588,7 +2593,8 @@ def valid_params(user_input, state, node_id: str):
     host_url = NODE_MAP.get(node_id, "")
 
     try:
-        url = f'http://{args.omniparser_server_url}/probe'
+        omni_url = omniparser_url_for_node(host_url, fallback_url=args.omniparser_server_url)
+        url = f'http://{omni_url}/probe'
         response = requests.get(url, timeout=3, proxies={"http": "", "https": ""})
         if response.status_code != 200:
             errors.append(f"OmniParser Server is not responding")
@@ -3123,11 +3129,44 @@ with gr.Blocks(theme=gr.themes.Default()) as demo:
             with gr.Column():
                 proxy_api_key = gr.Textbox(
                     label="API Key",
-                    type="password",
+                    type="text",
                     value=default_provider.get("api_key", ""),
                     placeholder="输入 API Key",
                     interactive=True,
                 )
+        with gr.Row():
+            save_api_key_btn = gr.Button("保存 API Key", variant="primary", size="sm")
+            clear_api_key_btn = gr.Button("清除 API Key", variant="stop", size="sm")
+            api_key_status = gr.Textbox(label="状态", interactive=False, max_lines=1)
+
+        def _save_api_key(provider_key, api_key):
+            cfg = load_config()
+            providers = cfg.get("providers", {})
+            if provider_key in providers:
+                providers[provider_key]["api_key"] = api_key
+                save_config(cfg)
+                return f"已保存 {providers[provider_key].get('name', provider_key)} 的 API Key"
+            return "保存失败：未找到对应的 provider"
+
+        def _clear_api_key(provider_key):
+            cfg = load_config()
+            providers = cfg.get("providers", {})
+            if provider_key in providers:
+                providers[provider_key]["api_key"] = ""
+                save_config(cfg)
+                return "", f"已清除 {providers[provider_key].get('name', provider_key)} 的 API Key"
+            return "", "清除失败：未找到对应的 provider"
+
+        save_api_key_btn.click(
+            fn=_save_api_key,
+            inputs=[proxy_provider, proxy_api_key],
+            outputs=[api_key_status],
+        )
+        clear_api_key_btn.click(
+            fn=_clear_api_key,
+            inputs=[proxy_provider],
+            outputs=[proxy_api_key, api_key_status],
+        )
 
     node_choices = []
     for idx, node_id in enumerate(ACTIVE_NODE_IDS, start=1):
