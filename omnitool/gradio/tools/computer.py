@@ -43,6 +43,9 @@ FOCUS_PROBE_ROI_HALF_HEIGHT = int(os.getenv("OMNITOOL_FOCUS_PROBE_ROI_HALF_HEIGH
 FOCUS_PROBE_INSERT_DIFF_MIN = float(os.getenv("OMNITOOL_FOCUS_PROBE_INSERT_DIFF_MIN", "0.0035"))
 FOCUS_PROBE_RESTORE_DIFF_MAX = float(os.getenv("OMNITOOL_FOCUS_PROBE_RESTORE_DIFF_MAX", "0.0018"))
 WINDOW_INFO_REFRESH_TTL_SEC = float(os.getenv("OMNITOOL_WINDOW_INFO_REFRESH_TTL_SEC", "0.5"))
+FULLSCREEN_TOLERANCE = int(os.getenv("OMNITOOL_FULLSCREEN_TOLERANCE", "80"))
+MAXIMIZE_BTN_OFFSET_X = 69
+MAXIMIZE_BTN_Y = 14
 
 Action = Literal[
     "key",
@@ -471,8 +474,49 @@ class ComputerTool(BaseAnthropicTool):
             return None
         return self.send_to_local(action)
 
+    def _get_remote_screen_resolution(self) -> tuple[int, int]:
+        """获取远程虚拟机的屏幕分辨率（不是窗口大小）。"""
+        try:
+            response = requests.post(
+                f"{self.windows_host_url}/execute",
+                headers={"Content-Type": "application/json"},
+                json={"command": ["python", "-c", "import pyautogui; print(pyautogui.size())"]},
+                timeout=10,
+                proxies={"http": "", "https": ""},
+            )
+            if response.status_code != 200:
+                return 0, 0
+            output = (response.json().get("output") or "").strip()
+            match = re.search(r"Size\(width=(\d+),\s*height=(\d+)\)", output)
+            if not match:
+                return 0, 0
+            return tuple(map(int, match.groups()))
+        except Exception:
+            return 0, 0
+
+    def _ensure_browser_maximized(self):
+        """检测浏览器窗口是否全屏，不是则点击最大化按钮恢复。"""
+        if not self.remote_mode:
+            return
+        self._refresh_remote_window_info(force=True)
+        win_w, win_h = self.width, self.height
+        screen_w, screen_h = self._get_remote_screen_resolution()
+        if screen_w == 0 or screen_h == 0:
+            return
+        width_gap = screen_w - win_w
+        height_gap = screen_h - win_h
+        if width_gap > FULLSCREEN_TOLERANCE or height_gap > FULLSCREEN_TOLERANCE:
+            print(f"[PREFLIGHT] 浏览器未全屏: 窗口={win_w}x{win_h}, 屏幕={screen_w}x{screen_h}, 正在恢复...")
+            maximize_x = screen_w - MAXIMIZE_BTN_OFFSET_X
+            maximize_y = MAXIMIZE_BTN_Y
+            self.send_action(f"pyautogui.click({maximize_x}, {maximize_y})")
+            time.sleep(0.5)
+            self._refresh_remote_window_info(force=True)
+            print(f"[PREFLIGHT] 恢复后窗口: {self.width}x{self.height}")
+
     async def screenshot(self):
         if self.remote_mode:
+            self._ensure_browser_maximized()
             self._refresh_remote_window_info(force=True)
             response = requests.get(
                 f"{self.windows_host_url}/screenshot",

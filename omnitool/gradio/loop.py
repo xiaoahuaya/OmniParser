@@ -46,6 +46,7 @@ from loop_helpers import (
     VIEWPORT_RECOVERY_HINT,
     action_gate_passed as _action_gate_passed,
     advance_plan_if_ready as _advance_plan_if_ready,
+    blocked_browser_double_click as _blocked_browser_double_click,
     blocked_editor_exit_action as _blocked_editor_exit_action,
     build_action_gate_recovery_hint as _build_action_gate_recovery_hint,
     check_repeat_coords as _check_repeat_coords,
@@ -288,6 +289,11 @@ def sampling_loop_sync(
             if blocked_click_error:
                 output_callback(blocked_click_error)
                 messages.append({"role": "user", "content": blocked_click_error})
+                continue
+            blocked_dblclick = _blocked_browser_double_click(vlm_response_json or {}, parsed_screen)
+            if blocked_dblclick:
+                output_callback(blocked_dblclick)
+                messages.append({"role": "user", "content": blocked_dblclick})
                 continue
             if _needs_viewport_recover(parsed_screen) and not _is_maximize_action(vlm_response_json or {}):
                 if step_count - last_viewport_hint_step >= 2:

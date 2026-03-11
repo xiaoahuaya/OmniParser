@@ -607,6 +607,11 @@ class VLMAgent:
 
 可用动作：left_click, right_click, double_click, drag, type, key, scroll_up, scroll_down, wait, None
 
+【重要 - 双击限制】：
+- 浏览器内（网页操作）禁止使用 double_click，双击会选中文字或触发窗口状态变化
+- double_click 仅用于桌面操作（如双击图标打开应用）
+- 浏览器中单击无效时，请改用 Tab+Enter 或 key:esc 后重试，不要改双击
+
 动作说明：
 - type: 仅输入文字，不自动回车
 - key: 按快捷键（如 enter, ctrl+a, ctrl+c 等）

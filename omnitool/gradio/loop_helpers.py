@@ -122,8 +122,16 @@ WINDOW_MAXIMIZE_KEYS = ("win+up", "alt+space,x")
 VIEWPORT_BLACK_RATIO_THRESHOLD = 0.90
 VIEWPORT_BAND_HEIGHT_RATIO = 0.18
 XHS_EDITOR_BLOCKED_CLICK_HINT = (
-    "⚠️ 当前处于长文编辑器，禁止点击左侧“发布笔记”入口按钮（该按钮会返回发布入口页并重开流程）。"
-    "请改为编辑器内流程：先“一键排版”再“下一步/发布”。"
+    “⚠️ 当前处于长文编辑器，禁止点击左侧”发布笔记”入口按钮（该按钮会返回发布入口页并重开流程）。”
+    “请改为编辑器内流程：先”一键排版”再”下一步/发布”。”
+)
+BROWSER_DOUBLE_CLICK_HINT = (
+    “⚠️ 浏览器内禁止使用 double_click（双击会选中文字或触发窗口状态变化）。”
+    “请改用 left_click；若单击无效，使用 Tab+Enter 或 Esc 后重试。”
+)
+BROWSER_CONTEXT_KEYWORDS = (
+    “http://”, “https://”, “xiaohongshu”, “douyin”, “kuaishou”,
+    “edge”, “chrome”, “firefox”, “browser”,
 )
 
 
@@ -305,6 +313,22 @@ def needs_viewport_recover(parsed_screen: dict) -> bool:
     return has_bottom_black_band(parsed_screen.get("original_screenshot_base64"))
 
 
+def is_browser_context(parsed_screen: dict) -> bool:
+    screen_info = str(parsed_screen.get("screen_info", "") or "").lower()
+    return any(k in screen_info for k in BROWSER_CONTEXT_KEYWORDS)
+
+
+def blocked_browser_double_click(vlm_response_json: dict, parsed_screen: dict) -> str | None:
+    if not isinstance(vlm_response_json, dict):
+        return None
+    action = str(vlm_response_json.get("Next Action", "") or "").lower().strip()
+    if action != "double_click":
+        return None
+    if not is_browser_context(parsed_screen):
+        return None
+    return BROWSER_DOUBLE_CLICK_HINT
+
+
 def is_xhs_editor_context(parsed_screen: dict) -> bool:
     screen_info = str(parsed_screen.get("screen_info", "") or "")
     return ("新的创作" in screen_info) and ("输入标题" in screen_info or "粘贴到这里或输入文字" in screen_info)
@@ -409,11 +433,11 @@ def build_action_gate_recovery_hint(vlm_response_json: dict, parsed_screen: dict
         if any(token in target_text for token in ("评论", "发送", "发布", "下一步", "一键排版", "保存", "确认")):
             return (
                 base
-                + " 按钮点击未生效。请执行恢复动作：1) Esc 2) 改点按钮内不同位置或双击 3) 必要时用 Enter 触发。"
+                + " 按钮点击未生效。请执行恢复动作：1) Esc 2) 改点按钮内不同位置 3) 必要时用 Tab+Enter 触发。"
             )
         return (
             base
-            + " 点击未生效。请执行恢复动作：1) Esc 2) 改点同控件不同区域/双击 3) 或用 Tab+Enter。"
+            + " 点击未生效。请执行恢复动作：1) Esc 2) 改点同控件不同区域 3) 或用 Tab+Enter。"
             " 仅导航异常时使用 Ctrl+L。"
         )
     return ACTION_GATE_RECOVERY_HINT

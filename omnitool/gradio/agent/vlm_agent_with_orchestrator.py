@@ -612,7 +612,7 @@ Your available "Next Action" only include:
 - key: presses keyboard shortcuts (e.g., "ctrl+a" for select all, "ctrl+c" for copy, "ctrl+v" for paste).
 - left_click: move mouse to box id and left clicks.
 - right_click: move mouse to box id and right clicks.
-- double_click: move mouse to box id and double clicks.
+- double_click: move mouse to box id and double clicks. ONLY use for desktop icons (e.g., opening an app). NEVER use inside a browser — it selects text or toggles window state. Use left_click instead; if it fails, try Tab+Enter or Esc then retry.
 - drag: drag from one element to another using From Box ID and To Box ID.
 - hover: move mouse to box id.
 - scroll_up: scrolls the screen up to view previous content.
